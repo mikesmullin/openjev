@@ -102,6 +102,11 @@ again on the next tick, forever.** The model is not wrong in any of these; the a
 | `pick up the cooking patty` ⇄ `put it back down` | taking food off the heat undoes progress |
 | `take a patty` ⇄ `put it back down` | no free pan to put it in |
 
+A separate class of bug, worth its own note: the grill slot timer is **reused**. It counts up to `cookT`
+while the food is raw, is reset to `0` the instant the item is done, then counts up to `burnT`. Reporting
+`t / cookT` throughout told the model a finished patty was *"69% cooked"* when it was really 69% of the way
+to being ruined — a premise that was not just vague but actively false.
+
 The fixes are all the same shape: do not offer an action that cannot change anything, and make sure the
 premise mentions every machine that works on its own, so "nothing happened" is distinguishable from
 "something is underway". There is also always a `wait` action, because food cooks and customers arrive on

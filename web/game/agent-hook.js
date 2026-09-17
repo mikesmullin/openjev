@@ -29,12 +29,18 @@ export function bind(ctx) {
       const out = [];
       for (const st of ctx.stations) {
         if (!(st instanceof ctx.Grill)) continue;
-        st.slots.forEach((s, i) =>
+        // The slot timer is reused: it counts up to cookT while raw, is reset to 0 the instant the item is
+        // done, then counts up to burnT. Reporting t/cookT throughout tells the model a finished patty is
+        // "69% cooked" when it is really 69% of the way to being ruined.
+        st.slots.forEach((s, i) => {
+          const it = s.item;
+          const done = it && (it.state === 'cooked' || it.state === 'melted' || it.state === 'ready');
           out.push({
-            i, item: s.item, name: itemName(s.item),
-            progress: s.item ? Math.min(1, s.t / st.cookT) : 0,
-            burning: s.item ? s.t > st.cookT : false,
-          }));
+            i, item: it, name: itemName(it),
+            phase: !it ? 'empty' : it.state === 'burnt' ? 'burnt' : done ? 'done' : 'cooking',
+            progress: it ? Math.min(1, s.t / (done ? st.burnT : st.cookT)) : 0,
+          });
+        });
       }
       return out;
     }
@@ -83,7 +89,7 @@ export function bind(ctx) {
           wants: (c.remaining || []).map(d => (DISH[d] && DISH[d].label) || d),
           patience: c.bar && typeof c.bar.v === 'number' ? pct(c.bar.v) : null,
         })),
-        grill: grillSlots().map(g => ({ slot: g.i, has: g.name, done: pct(g.progress), burning: g.burning })),
+        grill: grillSlots().map(g => ({ slot: g.i, has: g.name, phase: g.phase, progress: pct(g.progress) })),
         plates: plateSlots().map(p => ({ slot: p.i, stack: p.stack, dish: p.dish })),
       };
     }
@@ -102,9 +108,11 @@ export function bind(ctx) {
       } else L.push('No customer is waiting at the counter right now.');
 
       const g = s.grill.filter(x => x.has);
-      L.push(g.length
-        ? 'On the grill: ' + g.map(x => `a ${x.has} in pan ${x.slot + 1}, ${x.burning ? 'already burning' : `${x.done}% cooked`}`).join('; ') + '.'
-        : 'The grill is empty.');
+      const phrase = (x) =>
+        x.phase === 'burnt' ? `a burnt ${x.has.replace(/^burnt /, '')} in pan ${x.slot + 1}, ruined and only fit for the bin`
+      : x.phase === 'done' ? `a finished ${x.has} in pan ${x.slot + 1}, cooked through and ${x.progress}% of the way to burning if it is left there`
+      : `a ${x.has} in pan ${x.slot + 1}, still raw at ${x.progress}% cooked`;
+      L.push(g.length ? 'On the grill: ' + g.map(phrase).join('; ') + '.' : 'The grill is empty.');
 
       if (s.soda) L.push(s.soda.busy
         ? (s.soda.full ? 'A full cup of soda is sitting on the soda machine, poured and ready to pick up.'
@@ -206,8 +214,15 @@ export function bind(ctx) {
             // no-op lets it win the argmax again on an unchanged state -- a livelock.
             if (w instanceof ctx.Tray) {
               if (!trayUseful(w.kind)) continue;
+              // A generic "another X is needed" loses to `wait` on a quiet board. Name the specific fact in
+              // the premise that makes this the right move -- the same reason statements beat action names.
+              const waitingOn = grillSlots().find(x => x.phase === 'done' && x.item &&
+                ((w.kind === 'bun' && x.item.kind === 'patty') || (w.kind === 'hotdog_bun' && x.item.kind === 'sausage')));
               push(out, `take a ${w.kind} from the tray`,
-                `Another ${w.kind} is needed to fill an order that is still outstanding.`, () => w.onTap());
+                waitingOn
+                  ? `A ${waitingOn.item.kind} is already cooked and burning on the grill, but no plate has a ${w.kind} on it to put it on.`
+                  : `Another ${w.kind} is needed to fill an order that is still outstanding.`,
+                () => w.onTap());
             } else if (w instanceof ctx.SodaMachine) {
               if (!w.cup) push(out, 'start pouring a soda',
                 'A customer has ordered a soda and none has been poured yet.', () => w.onTap());
