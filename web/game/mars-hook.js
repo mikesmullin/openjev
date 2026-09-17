@@ -33,6 +33,7 @@ export function bind(ctx) {
       // live() is the liveness test as well as the tracker: it returns null once the target is gone, and
       // the autopilot releases on null. Without it the ship keeps shooting a building it already destroyed.
       out.push({ kind: 'boss', key, uid: `boss:${key}`, label: LABEL[key], hp, max,
+                 radius: ({ clawL: 6.5, clawR: 6.5, tail: 4.2, head: 5.6 })[key],
                  pos: ctx.getBossPartWorldPos(key).clone(),
                  live: () => (ctx.bossHP[key] > 0 && (PHASE_PARTS[ctx.bossPhase] || []).includes(key)
                               ? ctx.getBossPartWorldPos(key) : null) });
@@ -46,13 +47,13 @@ export function bind(ctx) {
 
     for (const a of aliens) {
       if (!a || !a.pos) continue;
-      out.push({ kind: 'saucer', label: 'an alien saucer', pos: a.pos.clone(), dist: a.pos.distanceTo(from),
+      out.push({ kind: 'saucer', label: 'an alien saucer', radius: 3.2, pos: a.pos.clone(), dist: a.pos.distanceTo(from),
                  uid: `saucer:${a.uid}`,
                  live: () => (aliens.includes(a) ? a.pos : null) });
     }
     for (const b of buildings) {
       if (!b || !b.alive) continue;
-      out.push({ kind: 'building', label: 'a colony building', bd: b, pos: b.center.clone(),
+      out.push({ kind: 'building', label: 'a colony building', bd: b, radius: b.radius, pos: b.center.clone(),
                  hp: b.hp, max: b.maxHp, dist: b.center.distanceTo(from),
                  uid: `building:${buildings.indexOf(b)}`,
                  live: () => (b.alive ? b.center : null) });
@@ -136,24 +137,23 @@ export function bind(ctx) {
        while its altitude reading still looked healthy. */
     const agl = ship.position.y - (ctx.groundHeight ? ctx.groundHeight(ship.position.x, ship.position.z) : 0);
 
-    /* The ship was killing itself. Aiming sets pitch, and thrust follows the nose, so pointing at a target
-       on the ground meant flying into the ground -- most of the damage last run was terrain, not saucers.
-       Guns reach ~900 m, so there is almost never a reason to close on a ground target at all. */
-    const wantClose = dist > 400;
-    const safe = agl > 45;
-    if (wantClose && safe && angle < 1.0) keys.add('KeyW'); else keys.delete('KeyW');
-    if (dist < 70) keys.add('KeyS'); else keys.delete('KeyS');
+    /* Close right in, the way it did before. The damage was never a nosedive -- it was the belly
+       occasionally clipping the ground while manoeuvring at low level -- so the fix is a light floor that
+       nudges the nose up, NOT a refusal to approach. Standing off at 400 m just meant missing everything. */
+    const wantClose = dist > 70;
+    if (wantClose && angle < 1.0) keys.add('KeyW'); else keys.delete('KeyW');
+    if (dist < 45) keys.add('KeyS'); else keys.delete('KeyS');
 
-    // Hard floor: climb, cut thrust, and refuse to keep the nose down no matter what we are aiming at.
     keys.delete('KeyQ'); keys.delete('KeyE');
-    if (agl < 45) {
-      keys.add('KeyQ');
-      keys.delete('KeyW');
-      if (ctx.pitch < 0) ctx.pitch = 0;
-    } else if (agl > 140) {
+    if (agl < 22) {
+      keys.add('KeyQ');                       // climb out of a scrape, but keep flying at the target
+      if (agl < 12 && ctx.pitch < 0) ctx.pitch = 0;   // only fight the aim when it is genuinely about to hit
+    } else if (agl > 160) {
       keys.add('KeyE');
-    } else if (Math.floor(performance.now() / 2100) % 2 === 0) {
-      keys.add('KeyQ');                     // gentle vertical jink, only in the safe band
+    } else if (agl > 45 && Math.floor(performance.now() / 2100) % 2 === 0) {
+      keys.add('KeyE');                       // vertical jink only with room beneath to spend
+    } else if (agl < 45) {
+      keys.add('KeyQ');                       // low but not scraping: bias upward rather than jinking down
     }
 
     /* Horizontal jink is the part that actually makes saucers miss, and it costs no altitude. */
@@ -162,9 +162,15 @@ export function bind(ctx) {
     keys.add(left ? 'KeyA' : 'KeyD');
 
     // Speed is the best defence while hurt, and the booster is free to hold.
-    if (recentDamage() >= 12 && safe) keys.add('ShiftLeft'); else keys.delete('ShiftLeft');
+    if (recentDamage() >= 12 && agl > 30) keys.add('ShiftLeft'); else keys.delete('ShiftLeft');
 
-    fireHeld = !target.noFire && angle < 0.16 && dist < 900;
+    /* Gate on the actual miss distance rather than a fixed angle. A 9-degree cone is +/-63 m of lateral
+       error at 400 m, against a building 4.5 m across -- it was firing constantly and hitting nothing
+       (229 shots for 3 buildings). sin(angle) * dist is how far the beam passes from the target centre. */
+    const miss = Math.sin(angle) * dist;
+    // Exactly the game's own tolerance: it tests `distance < radius + 0.4`. Anything stricter just wastes
+    // firing opportunities, and the jink is already pulling the aim around.
+    fireHeld = !target.noFire && dist < 900 && miss < (target.radius ?? 4) + 0.4;
     ctx.firing = fireHeld;
   }
 
