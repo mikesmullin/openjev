@@ -97,15 +97,41 @@ cannot be told apart anyway.
 
 ## How well it plays
 
-Badly, honestly. Two 44-piece runs ended in game over with **500 points / 4 lines** and **200 points /
-2 lines**, finishing with 27 and 32 buried holes. 4–19 distinct outcomes are scored per piece in 30–800 ms.
+Four runs: **5, 7, 8 and 12 lines** (500–1500 points) over 52–69 pieces, each ending in game over. 4–19
+outcomes are scored per piece in 30–800 ms.
 
-It does get the easy calls right — offered a line clear it takes it, and on an empty board it picks the
-flattest placement (roughness 1 over 2, 4 and 8). Where it loses is the trade-off: asked to choose between
-`+1 hole, roughness 3` and `+0 holes, roughness 5`, it took the hole, even though the premise says in plain
-language that burying cells is bad. It is a one-ply greedy reranker with no lookahead past the current
-piece, scoring English sentences with an NLI head — not a Tetris AI, and a hand-written heuristic would
-crush it.
+It started much worse — 0 to 4 lines — and three changes got it there. They are worth recording because two
+of them are about *language*, not search:
+
+**Tell it how close a clear is.** The original description had no signal for line-clear progress at all, so
+it optimised flat-and-low forever and never aimed at finishing a row. Outcomes now report the nearest
+unfinished row's remaining cells.
+
+**Trim the ballot to the Pareto front.** Drop any placement that another placement beats on *every* axis at
+once (lines, buried cells, height, roughness). This removes strictly-worse options without taking a position
+on the trade-offs between them — the model still chooses.
+
+> A first attempt simply dropped every hole-creating move whenever a clean one existed, and it backfired
+> badly. Flat-topping the stack never buries anything, while filling a gap beside it usually does, so the
+> filter left only tower-building moves. The stack went 2 → 5 → 7 rows in three pieces, and by piece 4 there
+> was no clean move left and it took seven holes at once. A filter that looks like it encodes the objective
+> can quietly encode the opposite.
+
+**Say it in words, not numbers.** This was the single biggest win — 3 lines to 8. The model is a *language*
+model, and the difference between "roughness 9" and "roughness 13" is a much weaker signal than "the surface
+is left jagged and full of gaps". Descriptions now lead with the decisive fact in plain language:
+
+```
+This move traps 1 empty cell under the blocks, ruining those rows.
+The stack is getting high, and the surface is left a little uneven.
+
+This move is clean and traps no empty cells. The stack stays low,
+and the surface is left flat and easy to build on. A row is left
+needing only 1 more cell to clear.
+```
+
+It is still a one-ply greedy reranker with no lookahead past the current piece, and a hand-written heuristic
+would beat it comfortably.
 
 Not TypeSafe's Jev, not RLCD, and none of Jev's calibration claims. openjev cannot emit free text — only
 3-class scores over supplied options — but it can still pick the wrong option with a confident score.

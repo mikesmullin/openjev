@@ -41,7 +41,15 @@ function features(board) {
   }
   let bumpiness = 0;
   for (let c = 0; c + 1 < WIDTH; c++) bumpiness += Math.abs(heights[c] - heights[c + 1]);
-  return { heights, holes, bumpiness, maxHeight: Math.max(...heights) };
+  // How close is the board to actually cashing in? Only rows that have been started count -- an untouched
+  // row "needs 10" and is not near completion. Without this the agent had no signal for line-clear
+  // progress at all: it optimised flat-and-low forever and never aimed at finishing a row.
+  let need = WIDTH;
+  for (const row of board) {
+    const filled = row.reduce((n, v) => n + (v ? 1 : 0), 0);
+    if (filled > 0 && filled < WIDTH) need = Math.min(need, WIDTH - filled);
+  }
+  return { heights, holes, bumpiness, need, maxHeight: Math.max(...heights) };
 }
 
 const filledRows = (board) => board.reduce((n, row) => n + (row.every(Boolean) ? 1 : 0), 0);
@@ -74,6 +82,7 @@ function candidates(live) {
         keys, rot, dx, cleared,
         gameOver: !!after.game_over,
         holesAdded: f.holes - base.holes,
+        need: f.need,
         maxHeight: f.maxHeight,
         flatter: f.bumpiness <= base.bumpiness,
         bumpiness: f.bumpiness,
@@ -92,8 +101,10 @@ function premise(state, base) {
     `The falling piece is an ${KIND[state.current.kind]} piece and the next piece is an ${KIND[state.next_piece]}.`,
     `Column heights left to right are ${cols}.`,
     `The stack is ${base.maxHeight} rows tall at its highest and has ${base.holes} buried empty cell${base.holes === 1 ? '' : 's'} under it.`,
-    `A good move clears lines, buries no empty cells, keeps the stack low, and leaves the surface flat.`,
-    `Burying an empty cell is bad because it cannot be filled until every row above it is cleared.`,
+    `The nearest unfinished row needs ${base.need} more cell${base.need === 1 ? '' : 's'} to complete and clear.`,
+    `The single most important rule is to never bury an empty cell under a block: a buried cell cannot be`,
+    `filled, so its row can never be completed until every row above it clears first.`,
+    `After that, completing rows matters most, then keeping the stack low and the surface flat.`,
   ].join(' ');
 }
 
@@ -102,18 +113,22 @@ function premise(state, base) {
  *  P(entailment)), not as a truth test. */
 function hypothesis(c) {
   if (c.gameOver) return 'This move stacks the pieces over the top of the board and ends the game.';
-  const parts = [];
-  parts.push(c.cleared > 0
-    ? `This move completes and clears ${c.cleared} line${c.cleared === 1 ? '' : 's'}`
-    : 'This move clears no lines');
-  parts.push(c.holesAdded > 0
-    ? `buries ${c.holesAdded} new empty cell${c.holesAdded === 1 ? '' : 's'} that cannot be filled`
-    : 'buries no new empty cells');
-  parts.push(`leaves the tallest column ${c.maxHeight} rows high`);
-  // A number the premise can be compared against. Without it every quiet placement produced the same
-  // sentence, every probability tied, and the argmax collapsed to whichever candidate came first.
-  parts.push(`and leaves the surface with a roughness of ${c.bumpiness}, where 0 is perfectly flat`);
-  return parts.join(', ') + '.';
+  // Lead with the decisive fact and say it in words. The model is a language model: "buries a cell that can
+  // never be filled" carries far more weight than the difference between "roughness 9" and "roughness 13".
+  const lead = c.cleared > 0
+    ? `This move completes and clears ${c.cleared} line${c.cleared === 1 ? '' : 's'}.`
+    : c.holesAdded > 0
+      ? `This move traps ${c.holesAdded} empty cell${c.holesAdded === 1 ? '' : 's'} under the blocks, ruining those rows.`
+      : 'This move is clean and traps no empty cells.';
+
+  const tall = c.maxHeight >= 15 ? 'The stack is dangerously close to the top'
+             : c.maxHeight >= 9 ? 'The stack is getting high'
+             : 'The stack stays low';
+  const flat = c.bumpiness <= 4 ? 'and the surface is left flat and easy to build on'
+             : c.bumpiness <= 9 ? 'and the surface is left a little uneven'
+             : 'and the surface is left jagged and full of gaps';
+  const close = c.need <= 2 ? ` A row is left needing only ${c.need} more cell${c.need === 1 ? '' : 's'} to clear.` : '';
+  return `${lead} ${tall}, ${flat}.${close}`;
 }
 
 // ------------------------------------------------------------------ model
@@ -150,8 +165,25 @@ while (placed < maxPieces) {
   const prem = premise(before, base);
   // Distinct boards can still produce identical sentences; the model cannot tell those apart, so collapse
   // them and keep the shortest key sequence as the representative.
+  // Trim the ballot to moves that are not strictly worse than some other move on every axis at once
+  // (lines cleared, cells buried, stack height, surface roughness). This removes dominated options without
+  // taking a position on the trade-offs between them -- the model still chooses.
+  //
+  // An earlier attempt simply dropped every hole-creating move when a clean one existed. That backfired:
+  // flat-topping the stack never buries anything, while filling a gap beside it usually does, so the
+  // filter left only tower-building moves. The stack went 2 -> 5 -> 7 rows in three pieces, and by piece 4
+  // there was no clean move left and it took seven holes at once.
+  const alive = out.filter(c => !c.gameOver);
+  const pool = alive.length ? alive : out;
+  const better = (a, b) =>   // a is at least as good as b on every axis
+    a.cleared >= b.cleared && a.holesAdded <= b.holesAdded &&
+    a.maxHeight <= b.maxHeight && a.bumpiness <= b.bumpiness;
+  const dominated = (x) => pool.some(y => y !== x && better(y, x) && !better(x, y));
+  const front = pool.filter(c => !dominated(c));
+  const ballot = front.length ? front : pool;
+
   const byText = new Map();
-  for (const c of out) {
+  for (const c of ballot) {
     const t = hypothesis(c);
     const prev = byText.get(t);
     if (!prev || c.keys.length < prev.keys.length) byText.set(t, c);
@@ -177,7 +209,7 @@ while (placed < maxPieces) {
   const af = features(after.board);
   log(`── piece ${placed}  ${KIND[before.current.kind]}→${KIND[before.next_piece]}  ` +
       `score ${after.score}  lines ${after.lines}  top ${af.maxHeight}  holes ${af.holes}`);
-  log(`   ${uniq.length} outcomes · ${ms.toFixed(0)} ms`);
+  log(`   ${uniq.length} outcomes · ${ms.toFixed(0)} ms` + ` of ${pool.length}`);
   // Compact columns rather than the full sentence: the tmux pane is ~54 wide and the sentences wrap into
   // unreadable mush. The sentence the model actually scored is printed once, for the move it chose.
   for (const { c, p } of ranked) {
