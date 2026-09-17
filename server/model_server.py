@@ -42,6 +42,8 @@ class Scorer:
             tc.pad_token_id = self.tok.pad_token_id
         self.backbone = getattr(self.model, self.model.base_model_prefix)
         self.max_len = max_len
+        self.last_tokens = 0
+        self.last_ms = 0.0
         self.lock = __import__("threading").Lock()   # one GPU, serialize callers
 
     @torch.no_grad()
@@ -49,12 +51,16 @@ class Scorer:
         """P(entailment) for each hypothesis against the premise, in one batched forward pass."""
         texts = [self.template.format(premise=premise.strip(), hypothesis=h.strip()) for h in hypotheses]
         with self.lock:
+            t0 = time.perf_counter()
             enc = self.tok(texts, truncation=True, max_length=self.max_len, padding=True, return_tensors="pt")
             enc = {k: v.to(self.device) for k, v in enc.items()}
+            self.last_tokens = int(enc["attention_mask"].sum().item())   # real input tokens, padding excluded
             h = self.backbone(**enc).last_hidden_state
             last = enc["attention_mask"].sum(1) - 1
             logits = self.model.score(h[torch.arange(h.shape[0], device=h.device), last]).float()
-            return torch.softmax(logits, -1)[:, ENT].cpu().tolist()
+            out = torch.softmax(logits, -1)[:, ENT].cpu().tolist()
+            self.last_ms = (time.perf_counter() - t0) * 1000
+            return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -82,6 +88,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send({"error": "not found"}, 404)
 
     def do_POST(self):
+        if self.path.startswith("/classify"):
+            return self.do_classify()
         if not self.path.startswith("/score"):
             return self._send({"error": "not found"}, 404)
         try:
@@ -95,6 +103,42 @@ class Handler(BaseHTTPRequestHandler):
             best = max(range(len(probs)), key=lambda i: probs[i])
             self._send({"probs": probs, "argmax": best, "ms": ms})
         except Exception as e:                       # never take the server down on one bad request
+            self._send({"error": f"{type(e).__name__}: {e}"}, 500)
+
+
+    def do_classify(self):
+        """Several independent questions about ONE premise, answered in a single batched forward pass.
+
+        Each question is a group of mutually exclusive hypotheses; the answer is the argmax within the
+        group and its probability is the confidence. Flattening every group into one batch means an email
+        with four questions costs one forward pass, not four.
+        """
+        try:
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            groups = req.get("groups") or {}
+            if not groups:
+                return self._send({"error": "groups required"}, 400)
+            names, flat, spans = [], [], []
+            for name, hyps in groups.items():
+                if not hyps:
+                    continue
+                spans.append((name, len(flat), len(flat) + len(hyps)))
+                flat.extend(hyps)
+            t0 = time.perf_counter()
+            probs = self.scorer.score(req.get("premise", ""), flat)
+            queued = (time.perf_counter() - t0) * 1000
+            ms = self.scorer.last_ms          # GPU time for this batch, excluding time queued behind others
+            out = {}
+            for name, a, b in spans:
+                p = probs[a:b]
+                best = max(range(len(p)), key=lambda i: p[i])
+                total = sum(p) or 1.0
+                out[name] = {"index": best, "p": p[best], "confidence": p[best] / total, "probs": p}
+            # No output tokens: this model does not generate. It scores, so "tokens out" is structurally 0.
+            self._send({"answers": out, "ms": ms, "hypotheses": len(flat),
+                        "queuedMs": queued,
+                        "tokensIn": self.scorer.last_tokens, "tokensOut": 0})
+        except Exception as e:
             self._send({"error": f"{type(e).__name__}: {e}"}, 500)
 
 

@@ -1,12 +1,15 @@
 {
-  "name": "openjev-mars",
+  "name": "openjev-inbox",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "openjev (Qwen3.5-4B NLI cross-encoder) picking targets in vibe-arcade's MARS RAID",
+  "description": "openjev (Qwen3.5-4B NLI cross-encoder) classifying a real email inbox",
   "scripts": {
     "model": "./.venv/bin/python server/model_server.py --ckpt ./openjev_hf/qwen3.5-4b-nli --port 8750",
     "dev": "bun server/static.js",
     "start": "bun server/static.js"
+  },
+  "dependencies": {
+    "js-yaml": "^5.4.2"
   }
 }

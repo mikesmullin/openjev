@@ -17,3 +17,7 @@ bun.lock
 
 # fetched at setup (see README): vibe-arcade's game, patched in place
 web/game/mars.html
+
+# never commit mail: point EMAIL_DB at a corpus outside the repo
+data/
+*.mbox

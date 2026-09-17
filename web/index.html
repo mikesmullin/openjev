@@ -3,62 +3,116 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>openjev plays MARS RAID</title>
+<title>Inbox × openjev</title>
 <style>
   :root{
-    --bg:#140d0b; --panel:#221512; --panel-2:#1a100e; --line:#43261f;
-    --ink:#f0e4df; --dim:#b08c80; --amber:#f2b134; --green:#3fbf7f; --red:#e5533d; --blue:#4aa3df; --violet:#c678dd;
+    --bg:#0d1117; --panel:#141a22; --panel-2:#0f151c; --line:#232c38; --line-2:#2d3846;
+    --ink:#e6edf3; --dim:#8b98a5; --dimmer:#5d6b7a;
+    --amber:#e8b23a; --green:#3fbf7f; --red:#ef4470; --blue:#4aa3df; --violet:#a77bf0;
     --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono)}
-  header{padding:13px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-  h1{font-size:16px;font-weight:600}
-  .sub{color:var(--dim);font-size:12px}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden}
+  #app,#app>div{height:100%;min-height:0;display:flex;flex-direction:column}
+
+  /* narrow, rounded, dark overlay scrollbars */
+  *{scrollbar-width:thin;scrollbar-color:#33404f transparent}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#2c3644;border-radius:99px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#3e4c5e;background-clip:content-box}
+
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);flex:0 0 auto}
+  .logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--violet),var(--blue));flex:0 0 auto}
+  h1{font-size:15px;font-weight:650;letter-spacing:.01em}
+  .meta{color:var(--dim);font-size:12px}
+  .meta code{font-family:var(--mono);background:var(--panel);border:1px solid var(--line);
+    border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink)}
   .grow{flex:1}
-  button{font:inherit;font-size:12px;color:var(--ink);background:var(--panel);border:1px solid var(--line);
-    border-radius:4px;padding:5px 12px;cursor:pointer}
-  button:hover:not(:disabled){background:#2e1c17;border-color:var(--amber)}
+  .pill{font-size:12px;color:var(--dim);background:var(--panel);border:1px solid var(--line);
+    border-radius:99px;padding:4px 11px;display:flex;align-items:center;gap:7px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+  .dot.busy{background:var(--amber)}
+  .dot.idle{background:var(--dimmer)}
+  button{font:inherit;font-size:13px;font-weight:550;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line-2);border-radius:7px;padding:6px 15px;cursor:pointer}
+  button:hover:not(:disabled){background:#1c2530;border-color:#3d4b5c}
   button:disabled{opacity:.4;cursor:default}
-  button.on{border-color:var(--green);color:var(--green)}
-  main{display:flex;gap:16px;padding:16px;align-items:flex-start;flex-wrap:wrap}
-  #stage{flex:0 0 auto;width:900px;max-width:100%;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#000}
-  #stage iframe{display:block;width:900px;height:600px;max-width:100%;border:0}
-  aside{flex:1;min-width:400px;display:flex;flex-direction:column;gap:13px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
-  .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:9px}
-  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-  .stat b{display:block;font-size:19px;font-weight:600}
-  .stat span{color:var(--dim);font-size:11px}
-  .row{display:flex;align-items:flex-start;gap:9px;margin:7px 0}
-  .bar{flex:0 0 110px;height:12px;background:var(--panel-2);border-radius:3px;overflow:hidden;margin-top:4px}
-  .bar i{display:block;height:100%;transition:width .12s linear}
-  .val{flex:0 0 38px;text-align:right;color:var(--dim);font-size:12px;margin-top:2px}
-  .txt{flex:1;font-size:12.5px;color:#e2cfc8}
-  .txt em{display:block;color:var(--dim);font-style:normal;font-size:11px;margin-top:1px}
-  .row.win .txt{color:var(--green)}
-  #premise{color:var(--dim);font-size:12.5px;white-space:pre-wrap;max-height:170px;overflow:auto}
-  .warn{color:var(--red)}
-  .muted{color:var(--dim)}
-  ol{margin:0;padding-left:18px;color:var(--dim);font-size:12px}
-  .legend{display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:6px}
-  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
-  svg{display:block;width:100%;height:150px}
+  button.primary{background:#1f6feb;border-color:#2d7ff9;color:#fff}
+  button.primary:hover:not(:disabled){background:#2d7ff9}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:13px;padding:14px 18px 0;flex:0 0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+  .k{color:var(--dimmer);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;margin-bottom:11px}
+  .big{font-size:29px;font-weight:650;line-height:1.05;font-variant-numeric:tabular-nums}
+  .big small{font-size:15px;color:var(--dim);font-weight:500}
+  .bar{height:6px;background:var(--panel-2);border-radius:99px;overflow:hidden;margin:11px 0}
+  .bar i{display:block;height:100%;background:var(--amber);border-radius:99px;transition:width .2s}
+  .triple{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+  .triple b{display:block;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+  .triple span{color:var(--dimmer);font-size:10.5px}
+
+  .donutwrap{display:flex;gap:14px;align-items:center}
+  .cats{flex:1;min-width:0}
+  .cat{display:flex;align-items:center;gap:7px;font-size:12px;line-height:1.75}
+  .cat i{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
+  .cat .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .cat .n{color:var(--ink);font-variant-numeric:tabular-nums}
+  .cat .pc{color:var(--dimmer);width:34px;text-align:right;font-variant-numeric:tabular-nums}
+
+  .sig{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:13px}
+  .sig b{display:block;font-size:22px;font-weight:650;font-variant-numeric:tabular-nums}
+  .sig span{color:var(--dimmer);font-size:10.5px;display:block}
+  .ubar{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dim);margin:5px 0}
+  .ubar .lbl{width:64px;flex:0 0 auto}
+  .ubar .track{flex:1;height:13px;background:var(--panel-2);border-radius:4px;overflow:hidden}
+  .ubar .track i{display:block;height:100%;border-radius:4px}
+  .ubar .n{width:34px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ink)}
+
+  .note{color:var(--dimmer);font-size:11px;line-height:1.5;margin-top:11px}
+
+  .tablewrap{flex:1 1 auto;min-height:0;margin:14px 18px 16px;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;overflow:hidden}
+  .thead{display:flex;align-items:center;gap:12px;padding:11px 15px;border-bottom:1px solid var(--line);flex:0 0 auto}
+  .thead h2{font-size:13px;font-weight:600}
+  .count{color:var(--dimmer);font-size:12px;font-variant-numeric:tabular-nums}
+  input[type=search]{font:inherit;font-size:12.5px;color:var(--ink);background:var(--panel-2);
+    border:1px solid var(--line);border-radius:7px;padding:6px 11px;width:250px;outline:none}
+  input[type=search]:focus{border-color:#3d4b5c}
+  .scroll{flex:1 1 auto;min-height:0;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  thead th{position:sticky;top:0;background:var(--panel);z-index:1;text-align:left;font-weight:600;
+    color:var(--dimmer);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+    padding:9px 11px;border-bottom:1px solid var(--line);white-space:nowrap}
+  tbody td{padding:8px 11px;border-bottom:1px solid #1a222c;vertical-align:middle}
+  tbody tr:hover{background:#171f28}
+  .num{color:var(--dimmer);font-variant-numeric:tabular-nums;width:46px}
+  .when{color:var(--dim);white-space:nowrap;font-size:12px}
+  .from{color:var(--ink);max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .subj{color:var(--dim);max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .subj b{color:var(--ink);font-weight:550}
+  .tag{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:2px 9px;font-size:11.5px;
+    border:1px solid transparent;white-space:nowrap}
+  .tag i{width:6px;height:6px;border-radius:50%}
+  .ans{display:inline-flex;align-items:baseline;gap:6px;white-space:nowrap}
+  .ans .c{color:var(--dimmer);font-size:10.5px;font-variant-numeric:tabular-nums}
+  .ubars{display:inline-flex;gap:2px;vertical-align:middle;margin-right:6px}
+  .ubars i{width:4px;height:11px;border-radius:1px;background:#2b3542}
+  .conf{font-variant-numeric:tabular-nums;color:var(--dim);width:40px;text-align:right}
+  .muted{color:var(--dimmer)}
+  .err{color:var(--red)}
+  @media (max-width:1000px){ body{overflow:auto} #app,#app>div{height:auto} }
 </style>
 </head>
 <body>
 <div id="app"></div>
-
 <script type="module">
-// Dev cache-bust: browsers hold ES modules across soft navigations even under no-store, so edits would
-// silently not take effect.
-const v = '?v=' + Date.now();
+const v = '?v=' + Date.now();      // dev cache-bust: browsers keep ES modules across reloads
 const M = (await import('./vendor/m.min.js' + v)).default;
-const { Agent } = await import('./app.js' + v);
-
-// M.mount() returns the reactive root instance but never calls init() on it -- only x-data and
-// x-component scopes get that automatically.
-const app = M.mount('#app', () => Agent(M));
+const { Inbox } = await import('./app.js' + v);
+const app = M.mount('#app', () => Inbox(M));   // M.mount does not call init() itself
 app.init();
 </script>
 </body>
