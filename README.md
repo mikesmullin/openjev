@@ -95,43 +95,44 @@ the agent just dropped everything down the left wall. Descriptions that do not d
 reranked. Identical sentences are now deduped before scoring, since a duplicate costs a forward pass and
 cannot be told apart anyway.
 
-## How well it plays
+## How well it plays — and an ablation that matters
 
-Four runs: **5, 7, 8 and 12 lines** (500–1500 points) over 52–69 pieces, each ending in game over. 4–19
-outcomes are scored per piece in 30–800 ms.
+| policy | lines per game (4 runs of 150 pieces) | mean |
+|---|---|---|
+| model, two-ply lookahead | 4, 4, 1, 2 | 2.8 |
+| **model** (default) | 6, 12, 9, 16 | **10.8** |
+| first candidate, no model at all | 22, 30, 9, 26 | **21.8** |
 
-It started much worse — 0 to 4 lines — and three changes got it there. They are worth recording because two
-of them are about *language*, not search:
+**The model is beaten about 2:1 by a trivial rule** — taking the first candidate off the same ballot. Read
+that before believing any claim here. Going from 0 to ~11 lines a game came mostly from the *scaffolding*
+(the Pareto front and the tie-break ranking), not from the model's judgement. `--policy first|random`
+reproduces the table; run the ablation before crediting a change to the model.
 
-**Tell it how close a clear is.** The original description had no signal for line-clear progress at all, so
-it optimised flat-and-low forever and never aimed at finishing a row. Outcomes now report the nearest
-unfinished row's remaining cells.
+What is still true: the model went from 0 lines to ~11 as the descriptions improved, and those improvements
+were about language, not search. Three findings, in order of size:
 
-**Trim the ballot to the Pareto front.** Drop any placement that another placement beats on *every* axis at
-once (lines, buried cells, height, roughness). This removes strictly-worse options without taking a position
-on the trade-offs between them — the model still chooses.
+**Say it in words, not numbers — but keep the numbers.** The biggest single jump (3 → 8 lines) came from
+replacing "roughness 13" with "the surface is left jagged and full of gaps". It is a *language* model, and
+a magnitude buried in a numeral is a weak signal. But qualitative buckets *alone* collapse most placements
+to an identical sentence, dedupe leaves one option, and the model has nothing to choose between. Words carry
+the judgement; the numbers keep the options apart. Both, or neither works.
 
-> A first attempt simply dropped every hole-creating move whenever a clean one existed, and it backfired
-> badly. Flat-topping the stack never buries anything, while filling a gap beside it usually does, so the
-> filter left only tower-building moves. The stack went 2 → 5 → 7 rows in three pieces, and by piece 4 there
-> was no clean move left and it took seven holes at once. A filter that looks like it encodes the objective
-> can quietly encode the opposite.
+**Tell it how close a clear is.** Nothing in the original description mentioned progress toward completing a
+row, so it optimised flat-and-low forever and never aimed at finishing one.
 
-**Say it in words, not numbers.** This was the single biggest win — 3 lines to 8. The model is a *language*
-model, and the difference between "roughness 9" and "roughness 13" is a much weaker signal than "the surface
-is left jagged and full of gaps". Descriptions now lead with the decisive fact in plain language:
+**Trim the ballot to the Pareto front** — drop any placement another beats on *every* axis at once (lines,
+buried cells, height, roughness). This removes strictly-worse options without deciding the trade-offs.
 
-```
-This move traps 1 empty cell under the blocks, ruining those rows.
-The stack is getting high, and the surface is left a little uneven.
+> Two traps worth recording. A first attempt at trimming dropped every hole-creating move whenever a clean
+> one existed. Flat-topping the stack never buries anything while filling a gap beside it usually does, so
+> the filter left only tower-building moves: the stack went 2 → 5 → 7 rows in three pieces, then took seven
+> holes at once. **A filter that looks like it encodes the objective can encode the opposite.**
+>
+> And two-ply lookahead — simulating what the *next* piece could do and adding a clause about it — made
+> things four times worse, not better. The simulation is correct; the extra clause appears to crowd out the
+> facts that decide the move. It is behind `--lookahead`.
 
-This move is clean and traps no empty cells. The stack stays low,
-and the surface is left flat and easy to build on. A row is left
-needing only 1 more cell to clear.
-```
-
-It is still a one-ply greedy reranker with no lookahead past the current piece, and a hand-written heuristic
-would beat it comfortably.
+It remains a one-ply greedy reranker with no lookahead, and a hand-written heuristic beats it comfortably.
 
 Not TypeSafe's Jev, not RLCD, and none of Jev's calibration claims. openjev cannot emit free text — only
 3-class scores over supplied options — but it can still pick the wrong option with a confident score.

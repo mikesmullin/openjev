@@ -17,7 +17,10 @@ const BIN = process.env.TETRIS_BIN ?? '/workspace/g4a/tetris/tetris';
 const LIVE = process.env.TETRIS_STATE_FILE ?? join(tmpdir(), 'openjev-tetris.dat');
 const MODEL = process.env.MODEL_URL ?? 'http://127.0.0.1:8750';
 const TELEMETRY = process.env.TETRIS_TELEMETRY ?? join(tmpdir(), 'openjev-tetris.log');
-const SCRATCH = join(mkdtempSync(join(tmpdir(), 'openjev-sim-')), 'sim.dat');
+const SIMDIR = mkdtempSync(join(tmpdir(), 'openjev-sim-'));
+const SCRATCH = join(SIMDIR, 'sim.dat');
+const SCRATCH2 = join(SIMDIR, 'sim2.dat');   // second ply
+const SCRATCH3 = join(SIMDIR, 'sim3.dat');
 
 const KIND = ['I', 'O', 'T', 'S', 'Z', 'J', 'L'];
 const WIDTH = 10, HEIGHT = 20;
@@ -53,6 +56,39 @@ function features(board) {
 }
 
 const filledRows = (board) => board.reduce((n, row) => n + (row.every(Boolean) ? 1 : 0), 0);
+
+/** Every distinct placement of the piece currently falling in `stateFile`, as {keys, after}. */
+function placements(stateFile, scratch) {
+  const out = [];
+  const seen = new Set();
+  for (let rot = 0; rot < 4; rot++) {
+    for (let dx = -6; dx <= 6; dx++) {
+      const keys = [...Array(rot).fill('w'), ...Array(Math.abs(dx)).fill(dx < 0 ? 'a' : 'd'), 'space'];
+      copyFileSync(stateFile, scratch);
+      run(scratch, ['press', ...keys]);
+      const after = dump(scratch);
+      const sig = JSON.stringify(after.board);
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      out.push({ keys, after });
+    }
+  }
+  return out;
+}
+
+/** Second ply: with the board this move produces, what is the best the *next* piece could then do?
+ *  The lookahead is search, but the judgement stays with the model -- this only adds a clause to the
+ *  description, it does not pick the move. */
+function followup(stateFile, baseHoles, baseLines) {
+  let bestCleared = 0, bestHoles = Infinity, any = false;
+  for (const { after } of placements(stateFile, SCRATCH3)) {
+    if (after.game_over) continue;
+    any = true;
+    bestCleared = Math.max(bestCleared, (after.lines ?? 0) - baseLines);
+    bestHoles = Math.min(bestHoles, features(after.board).holes - baseHoles);
+  }
+  return { any, bestCleared, bestHoles: bestHoles === Infinity ? 0 : bestHoles };
+}
 
 // ------------------------------------------------------------------ candidate moves
 /** Every (rotation, horizontal offset) the piece can reach, simulated on a forked state file. */
@@ -121,14 +157,25 @@ function hypothesis(c) {
       ? `This move traps ${c.holesAdded} empty cell${c.holesAdded === 1 ? '' : 's'} under the blocks, ruining those rows.`
       : 'This move is clean and traps no empty cells.';
 
-  const tall = c.maxHeight >= 15 ? 'The stack is dangerously close to the top'
-             : c.maxHeight >= 9 ? 'The stack is getting high'
-             : 'The stack stays low';
-  const flat = c.bumpiness <= 4 ? 'and the surface is left flat and easy to build on'
-             : c.bumpiness <= 9 ? 'and the surface is left a little uneven'
-             : 'and the surface is left jagged and full of gaps';
+  // Words carry the judgement, numbers keep the options apart. Qualitative buckets alone collapsed most
+  // placements to an identical sentence, dedupe left a single option, and the model had nothing to choose
+  // between -- the same tie that made the first numeric version drop everything down the left wall.
+  const tall = c.maxHeight >= 15 ? `The stack is dangerously close to the top at ${c.maxHeight} rows`
+             : c.maxHeight >= 9 ? `The stack is getting high at ${c.maxHeight} rows`
+             : `The stack stays low at ${c.maxHeight} rows`;
+  const flat = c.bumpiness <= 4 ? `and the surface is left flat and easy to build on, roughness ${c.bumpiness}`
+             : c.bumpiness <= 9 ? `and the surface is left a little uneven, roughness ${c.bumpiness}`
+             : `and the surface is left jagged and full of gaps, roughness ${c.bumpiness}`;
   const close = c.need <= 2 ? ` A row is left needing only ${c.need} more cell${c.need === 1 ? '' : 's'} to clear.` : '';
-  return `${lead} ${tall}, ${flat}.${close}`;
+  // What the piece after this one could then do. The search finds it; the model still decides whether it
+  // is worth having.
+  const n = c.next;
+  const ahead = !n ? ''
+    : !n.any ? ' After it there is no room left for the next piece at all.'
+    : n.bestCleared > 0 ? ` After it the next piece could immediately clear ${n.bestCleared} more line${n.bestCleared === 1 ? '' : 's'}.`
+    : n.bestHoles > 0 ? ' After it the next piece has nowhere clean to go and would have to trap more cells.'
+    : ' After it the next piece still has a clean place to go.';
+  return `${lead} ${tall}, ${flat}.${close}${ahead}`;
 }
 
 // ------------------------------------------------------------------ model
@@ -146,6 +193,9 @@ async function score(prem, hyps) {
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
 const maxPieces = Number(opt('--pieces', 40));
+// Ablation: is the model choosing, or is the Pareto filter? 'random' picks uniformly from the same
+// ballot, 'first' always takes the first -- both skip the model entirely.
+const POLICY = opt('--policy', 'model');
 
 if (argv.includes('--reset')) run(LIVE, ['press', 'q']);
 writeFileSync(TELEMETRY, '');
@@ -182,18 +232,38 @@ while (placed < maxPieces) {
   const front = pool.filter(c => !dominated(c));
   const ballot = front.length ? front : pool;
 
+  // Second ply, over the trimmed ballot only. Doing it for every placement would be ~19x19 simulations a
+  // piece; over the front it is closer to 6x19 and stays well under a second.
+  // Off by default: measured at 2.8 lines/game with it against 10.8 without. The extra clause appears to
+  // crowd out the facts that decide the move. Kept behind a flag because the simulation is sound -- it is
+  // the wording that hurts, and that is worth another attempt.
+  if (argv.includes('--lookahead')) for (const c of ballot) {
+    copyFileSync(LIVE, SCRATCH2);
+    run(SCRATCH2, ['press', ...c.keys]);
+    const a = dump(SCRATCH2);
+    c.next = followup(SCRATCH2, features(a.board).holes, a.lines ?? 0);
+  }
+
+  // If two placements really are indistinguishable in words, keep the better one by the objective rather
+  // than the one with the fewest keypresses -- "fewest keys" means "furthest left", which is not a policy.
+  const rank = (c) => [c.holesAdded, -c.cleared, c.maxHeight, c.bumpiness, c.keys.length];
   const byText = new Map();
   for (const c of ballot) {
     const t = hypothesis(c);
     const prev = byText.get(t);
-    if (!prev || c.keys.length < prev.keys.length) byText.set(t, c);
+    if (!prev || rank(c) < rank(prev)) byText.set(t, c);
   }
   const uniq = [...byText.values()];
   const hyps = uniq.map(hypothesis);
   const t0 = performance.now();
   let res;
-  try { res = await score(prem, hyps); }
-  catch (e) { log(`model unreachable: ${e.message}`); break; }
+  if (POLICY === 'model') {
+    try { res = await score(prem, hyps); }
+    catch (e) { log(`model unreachable: ${e.message}`); break; }
+  } else {
+    const i = POLICY === 'random' ? Math.floor(Math.random() * uniq.length) : 0;
+    res = { probs: uniq.map((_, k) => (k === i ? 1 : 0)), argmax: i };
+  }
   const ms = performance.now() - t0;
 
   const pick = uniq[res.argmax];
