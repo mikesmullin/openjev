@@ -12,8 +12,10 @@ statements and the argmax entailment is the answer.
 | [`openjev-cook`](../../tree/openjev-cook) | Cook Fever |
 | [`openjev-doom`](../../tree/openjev-doom) | ViZDoom — the original reproduction |
 
-**Not a GitHub fork.** The original lives only on Hugging Face. Root commit `63ab36c` is his `code/` verbatim
-at `8c9db06`, so `git diff 63ab36c` is exactly our contribution. MIT, like his.
+**Not a GitHub fork.** The original lives only on Hugging Face. Root commit `63ab36c` vendors his `code/`
+verbatim at `8c9db06` — this branch then deletes the parts it does not use (his training and evaluation
+scripts, and the game demos), so `git show 63ab36c` is the pristine upstream and everything after it here is
+ours. The other branches keep his scripts. MIT, like his.
 
 ---
 
