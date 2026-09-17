@@ -220,20 +220,26 @@ export function Agent(M) {
         add(b, `attack ${b.label}`,
             `${b.label[0].toUpperCase()}${b.label.slice(1)} is the only part of the scorpion that can be hurt right now, and it is down to ${Math.round(100 * b.hp / b.max)} percent.`,
             'boss');
-      // A generic "a saucer is 49 metres away" scored 0.01 against the boss clause at 0.80, so the ship
-      // flew into a swarm of twelve and was shot down with the scorpion at 23 percent. The danger has to
-      // be in the sentence, and it has to escalate as the hull goes.
-      for (const a of near('saucer', 3)) {
-        const hurt = s.hull < 40 ? 'The ship is about to be destroyed'
-                   : s.hull < 70 ? 'The ship is badly damaged'
-                   : 'The ship is under fire';
+      /* Saucers are only worth turning on when evasion is FAILING. The previous wording stated a
+         distance and asserted "nothing else matters", which is true at every instant, so it always won and
+         the ship spent the game swatting an endless spawn instead of flattening the colony. The ship now
+         jinks continuously (see mars-hook.js), so the deciding fact is whether it is still being hit. */
+      /* Only offer saucers when evasion is actually failing.
+         The previous version always offered one, with a sentence saying the saucers were missing and could
+         be ignored -- and it still won. That is a reranker-specific trap: P(entailment) measures whether the
+         sentence is TRUE given the premise, not whether it argues for the action it is bound to. "The
+         saucers are missing and can be ignored for now" is extremely true, so it scored high and dragged
+         the ship onto a target its own sentence said to skip. A hypothesis must argue FOR its action; if it
+         cannot, the option does not belong on the ballot at all. */
+      const bleeding = s.recentDamage >= 12;
+      if (bleeding) for (const a of near('saucer', 3)) {
         add(a, 'attack an alien saucer',
-            `${hurt} at ${s.hull} percent hull, and an alien saucer only ${Math.round(a.dist)} metres away is shooting at it. Nothing else matters if the ship is destroyed.`,
+            `The evasive flying is not working: the ship has lost ${s.recentDamage} hull in the last ten seconds and is down to ${s.hull} percent, so the saucer ${Math.round(a.dist)} metres away has to be shot down before anything else.`,
             'saucer');
       }
       for (const b of near('building', 3))
         add(b, 'attack a colony building',
-            `A colony building is standing ${Math.round(b.dist)} metres away and destroying it damages the colony.`,
+            `Destroying the colony is the mission and ${s.buildings} building${s.buildings === 1 ? ' is' : 's are'} still standing; this one is only ${Math.round(b.dist)} metres away and the ship is not being hit hard right now.`,
             'building');
       if (s.bossState === 'dormant')
         add({ wake: true }, 'wake the scorpion',
@@ -241,16 +247,19 @@ export function Agent(M) {
             'other', 'other:wake');
       if (s.hull < 45)
         add({ retreat: true }, 'break off and climb',
-            `The ship is badly damaged at ${s.hull} percent hull and needs to break off before it is destroyed.`,
+            `The ship is down to ${s.hull} percent hull and has lost ${s.recentDamage} in the last ten seconds; it has to break off and climb away to survive.`,
             'other', 'other:retreat');
 
       const L = [];
       L.push(`A raid on a Mars colony, flying a gunship. Hull is at ${s.hull} percent and the ship is ${s.altitude} metres up.`);
+      L.push(s.recentDamage >= 12
+        ? `The ship has lost ${s.recentDamage} hull in the last ten seconds; it is being hit badly and the evasive flying is not keeping it safe.`
+        : `The ship is flying evasively and has lost only ${s.recentDamage} hull in the last ten seconds, so the saucers are mostly missing.`);
       L.push(s.buildings ? `${s.buildings} colony building${s.buildings === 1 ? ' is' : 's are'} still standing.` : 'Every colony building has been destroyed.');
       L.push(s.saucers ? `${s.saucers} alien saucer${s.saucers === 1 ? ' is' : 's are'} in the air.` : 'No alien saucers are in the air.');
       if (s.bossState === 'dormant') L.push('A giant scorpion lies buried and dormant; it can be woken.');
       else if (s.boss.length) L.push('The scorpion is awake. ' + s.boss.map(b => `${b.part} is at ${b.pct} percent`).join('; ') + '. Every other part of it is armoured and cannot be hurt.');
-      L.push('Saucers shoot back and will destroy the ship if ignored. Destroying the colony is the objective.');
+      L.push('Saucers shoot back, but they have poor aim against a ship that keeps moving, and more of them keep spawning, so clearing them is endless. Destroying the colony and then the scorpion is the objective.');
       return { premise: L.join(' '), list };
     },
 
@@ -292,7 +301,7 @@ export function Agent(M) {
 
       const pick = list[r.argmax];
       if (pick.target.wake) this.mars.wakeBoss();
-      else if (pick.target.retreat) this.mars.release();
+      else if (pick.target.retreat) this.mars.evade();
       else this.mars.aim(pick.target);
 
       // One sample per *option* per tick, keyed by its identity hash, plus what was actually chosen.

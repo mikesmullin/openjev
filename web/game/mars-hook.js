@@ -74,6 +74,7 @@ export function bind(ctx) {
       bossPhase: ctx.bossPhase,
       bossAlive: !!ctx.bossAlive,
       boss: bossParts().map(p => ({ part: p.label, hp: p.hp, max: p.max, pct: Math.round(100 * p.hp / p.max) })),
+      recentDamage: Math.round(recentDamage()),
       saucers: t.filter(x => x.kind === 'saucer').length,
       buildings: t.filter(x => x.kind === 'building').length,
       nearest: t[0] ? { what: t[0].label, dist: Math.round(t[0].dist) } : null,
@@ -82,6 +83,16 @@ export function bind(ctx) {
 
   // ------------------------------------------------------------------ autopilot
   let target = null, fireHeld = false;
+
+  /* The model is stateless between calls, so anything like "is this working?" has to be computed here and
+     put in the premise. A snapshot ("a saucer is 49 m away") is always true and therefore always urgent;
+     a trend ("no damage taken in the last 10 seconds") is what should actually decide whether to break off. */
+  const hullLog = [];
+  setInterval(() => {
+    hullLog.push({ t: performance.now(), hp: ctx.hp });
+    while (hullLog.length && hullLog[0].t < performance.now() - 10000) hullLog.shift();
+  }, 250);
+  const recentDamage = () => (hullLog.length ? Math.max(0, hullLog[0].hp - ctx.hp) : 0);
 
   const aimError = (pos) => {
     const d = camera.getWorldDirection(V());
@@ -120,16 +131,55 @@ export function bind(ctx) {
     const { angle } = aimError(pos);
 
     const dist = pos.distanceTo(ship.position);
-    if (dist > 70 && angle < 1.0) keys.add('KeyW'); else keys.delete('KeyW');
-    if (ship.position.y < 18) keys.add('KeyQ'); else keys.delete('KeyQ');
 
-    fireHeld = angle < 0.16 && dist < 900;
+    /* Height above the terrain, not above zero: the map is not flat, and the ship was flying into hillsides
+       while its altitude reading still looked healthy. */
+    const agl = ship.position.y - (ctx.groundHeight ? ctx.groundHeight(ship.position.x, ship.position.z) : 0);
+
+    /* The ship was killing itself. Aiming sets pitch, and thrust follows the nose, so pointing at a target
+       on the ground meant flying into the ground -- most of the damage last run was terrain, not saucers.
+       Guns reach ~900 m, so there is almost never a reason to close on a ground target at all. */
+    const wantClose = dist > 400;
+    const safe = agl > 45;
+    if (wantClose && safe && angle < 1.0) keys.add('KeyW'); else keys.delete('KeyW');
+    if (dist < 70) keys.add('KeyS'); else keys.delete('KeyS');
+
+    // Hard floor: climb, cut thrust, and refuse to keep the nose down no matter what we are aiming at.
+    keys.delete('KeyQ'); keys.delete('KeyE');
+    if (agl < 45) {
+      keys.add('KeyQ');
+      keys.delete('KeyW');
+      if (ctx.pitch < 0) ctx.pitch = 0;
+    } else if (agl > 140) {
+      keys.add('KeyE');
+    } else if (Math.floor(performance.now() / 2100) % 2 === 0) {
+      keys.add('KeyQ');                     // gentle vertical jink, only in the safe band
+    }
+
+    /* Horizontal jink is the part that actually makes saucers miss, and it costs no altitude. */
+    const left = Math.floor(performance.now() / 1300) % 2 === 0;
+    keys.delete(left ? 'KeyD' : 'KeyA');
+    keys.add(left ? 'KeyA' : 'KeyD');
+
+    // Speed is the best defence while hurt, and the booster is free to hold.
+    if (recentDamage() >= 12 && safe) keys.add('ShiftLeft'); else keys.delete('ShiftLeft');
+
+    fireHeld = !target.noFire && angle < 0.16 && dist < 900;
     ctx.firing = fireHeld;
   }
 
   function release() {
-    keys.delete('KeyW'); keys.delete('KeyQ');
+    for (const k of ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft']) keys.delete(k);
     ctx.firing = false; fireHeld = false;
+  }
+
+  /** Break off: climb away from the nearest threat under boost. "Stop flying" was the old behaviour and it
+   *  is the worst possible answer -- a stationary ship is exactly what the saucers can actually hit. */
+  function evade() {
+    const from = ship.position;
+    const threat = targets().find(t => t.kind === 'saucer');
+    const away = threat ? from.clone().sub(threat.pos).setY(0).normalize() : V(0, 0, -1);
+    target = { pos: from.clone().addScaledVector(away, 600).setY(from.y + 120), live() { return this.pos; }, noFire: true };
   }
 
   // Drive the autopilot on its own rAF loop; the game keeps its own.
@@ -161,7 +211,7 @@ export function bind(ctx) {
     start: () => ctx.startGame(true),
     wakeBoss: () => { if (ctx.bossState === 'dormant') ctx.startEmerge(); },
     aim: (t) => { target = t; },
-    release,
+    evade, release,
     firing: () => fireHeld,
   };
   window.dispatchEvent(new Event('mars-ready'));
