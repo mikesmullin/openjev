@@ -214,6 +214,7 @@ export function bind(ctx) {
       };
     },
     ready: () => ctx.state === 'playing',
+    mode: () => ctx.state,
     start: () => ctx.startGame(true),
     wakeBoss: () => { if (ctx.bossState === 'dormant') ctx.startEmerge(); },
     aim: (t) => { target = t; },

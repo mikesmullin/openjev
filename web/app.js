@@ -49,8 +49,8 @@ export function Agent(M) {
   <span class="sub" x-text="status()"></span>
   <span class="grow"></span>
   <button @click="toggle()" :class="running ? 'on' : ''" :disabled="!booted"
-          x-text="running ? 'pause agent' : 'run agent'"></button>
-  <button @click="step()" :disabled="!booted || running">single step</button>
+          x-text="arming ? 'waking model…' : running ? 'pause agent' : 'run agent'"></button>
+  <button @click="stepOnce()" :disabled="!booted || running || arming">single step</button>
   <button @click="wake()" :disabled="!booted">wake the scorpion</button>
 </header>
 
@@ -179,7 +179,9 @@ export function Agent(M) {
         if (w && w.__mars) {
           clearInterval(wait);
           this.mars = w.__mars;
-          if (!this.mars.ready()) this.mars.start();
+          // Deliberately do NOT start the game here. mars.html has no pause state, but its menu is one:
+          // nothing updates until startGame(). Leaving it there means the sim does not begin -- and the
+          // ship does not start taking fire -- until the model is hot and has already chosen a target.
           this.booted = true;
           this.refresh();
           M.redraw();
@@ -187,8 +189,15 @@ export function Agent(M) {
       }, 250);
     },
 
+    async stepOnce() {
+      if (this.mars.mode() !== 'playing') { await this.arm(); this.mars.start(); }
+      await this.step();
+    },
+
     status() {
       if (!this.booted) return 'loading the game…';
+      if (this.arming) return 'waking the model — game held at the menu…';
+      if (this.mars && this.mars.mode() !== 'playing') return `${this.modelInfo} · paused, press run agent`;
       return `${this.modelInfo} · ${this.game.mode || '?'}`;
     },
     wake() { this.mars.wakeBoss(); this.refresh(); M.redraw(); },
@@ -263,10 +272,37 @@ export function Agent(M) {
       return { premise: L.join(' '), list };
     },
 
-    toggle() {
+    arming: false,
+
+    /** Warm the model with the real first question while the game is still paused on the menu, then start
+     *  the sim and fly immediately. The first forward pass after a page load is much slower than the rest
+     *  (weights paged in, kernels not yet warm), and that cost used to be paid with the ship already
+     *  airborne and being shot at. */
+    async arm() {
+      this.arming = true; M.redraw();
+      try {
+        const { premise, list } = this.candidates();
+        if (list.length) {
+          await fetch('/api/decide', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ premise, hypotheses: list.map(o => o.hypothesis) }),
+          });
+        }
+      } catch (e) { this.error = 'model warm-up failed: ' + e.message; }
+      this.arming = false;
+    },
+
+    async toggle() {
       this.running = !this.running;
-      if (this.running) { this.startedAt ||= Date.now(); this.loop(); }
-      else this.mars.release();
+      if (!this.running) { this.mars.release(); M.redraw(); return; }
+      if (this.mars.mode() !== 'playing') {
+        await this.arm();                 // model hot first
+        if (this.error) { this.running = false; M.redraw(); return; }
+        this.mars.start();                // then unpause
+        await this.step();                // and have a target before the first danger arrives
+      }
+      this.startedAt ||= Date.now();
+      this.loop();
     },
     async loop() {
       while (this.running) {
