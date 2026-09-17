@@ -1,194 +1,130 @@
 # openjev
 
-A local reproduction of [AlexWortega/openjev](https://huggingface.co/AlexWortega/openjev) — Qwen3.5-4B
-fine-tuned as a 3-class NLI cross-encoder, used as a game policy by scoring hypotheses about the game state
-and taking the argmax entailment. Reproduced on a single RTX 5090, then extended so it can be watched live.
+[AlexWortega/openjev](https://huggingface.co/AlexWortega/openjev) — Qwen3.5-4B fine-tuned as a 3-class NLI
+cross-encoder — reproduced locally, then pointed at a cooking game. The model never generates text. It scores
+statements about the game state and the argmax entailment becomes the move.
 
-**This is not a GitHub fork.** The original lives only on Hugging Face — all 122 repos on
-[github.com/AlexWortega](https://github.com/AlexWortega) were checked and none is an equivalent, which fits
-how he worked: his `code/SKILL.md` describes rsyncing to remote GPU boxes and publishing straight to the Hub.
-There is nothing on GitHub to fork from.
+| branch | what it plays |
+|---|---|
+| `main` | **Cook Fever** (`cook2.html` from [mikesmullin/vibe-arcade](https://github.com/mikesmullin/vibe-arcade)), in the browser |
+| [`openjev-doom`](../../tree/openjev-doom) | ViZDoom, the original reproduction — see that branch's README |
 
-Attribution is carried in the history instead. The root commit `63ab36c` is his `code/` and
-`modeling_openjev.py` fetched verbatim from the HF repo at `8c9db06` and left untouched, so:
-
-```bash
-git diff 63ab36c            # exactly our contribution, nothing of his mixed in
-```
-
-Hugging Face repos are real git repos, so his history is fetchable directly if you want the true lineage
-(his tree tracks the 8.5 GB checkpoint through LFS — clone with `GIT_LFS_SKIP_SMUDGE=1`):
+**This is not a GitHub fork.** The original lives only on Hugging Face; all 122 repos on
+[github.com/AlexWortega](https://github.com/AlexWortega) were checked and none is an equivalent. Attribution
+is in the history: the root commit `63ab36c` is his `code/` fetched verbatim at `8c9db06`, so
+`git diff 63ab36c` is exactly our contribution. His work is MIT; so is this. His HF repo is a real git repo
+if you want the true lineage:
 
 ```bash
-git remote add upstream https://huggingface.co/AlexWortega/openjev
-git fetch upstream          # upstream/main is 8c9db06, the SHA our root commit vendors
-```
-
-His work is MIT; so is this.
-
-The 8.5 GB checkpoint is not in git. Fetch it with:
-
-```bash
-huggingface-cli download AlexWortega/openjev --local-dir ./openjev_hf
+git remote add upstream https://huggingface.co/AlexWortega/openjev   # upstream/main is 8c9db06
 ```
 
 ---
 
-## 1. The reproduction
-
-Ran his harness against his published `results/*.json`. Same seeds, 5 episodes each.
-
-| policy | his kills | ours | his max | ours | his ms | ours |
-|---|---|---|---|---|---|---|
-| random | 1.00 | **1.00** | 2 | 2 | – | – |
-| oracle (heuristic) | 18.80 | **18.80** | 22 | 22 | – | – |
-| zero-shot NLI, `hyp=action` | 1.00 | **1.00** | 1 | 1 | 60.4 | 33.9 |
-| zero-shot NLI, `hyp=position` | 11.00 | 10.40 | 16 | 16 | 56.7 | 64.3 |
-| zero-shot NLI, `hyp=position_none` | 10.20 | 10.40 | 14 | 16 | 57.5 | 51.5 |
-| latent + MLP head | 16.00 | 14.40 | 22 | 20 | 66.4 | 34.5 |
-
-The three deterministic rows match to the last decimal. The two that consult the model drift because bf16
-kernels flip an occasional argmax and Doom compounds one different turn into a different episode.
-
-### The published scripts do not reproduce the clip
-
-`code/doom.py` as published predates the run that made the video. Its only hypotheses are
-`"The correct action is: {turn left|turn right|attack}"`, which **his own `results/doom_4b.json` scores at
-1.0 kills — identical to random.** The clip is `videos/doom_zs_position.mp4` (11.0 kills), produced by a
-`--hyp position --zero-shot-only` revision that was never uploaded. We reconstructed those flags from the
-hypothesis table in his `results/full_report.md`. `code/flappy.py` has the same gap — the `sign` variant that
-scores 28/28 in the report is missing.
-
-That gap *is* the finding. Same frozen weights, same game state; only the wording of the hypothesis changes:
-
-```
-"The correct action is: turn left"                     ->  1.0 kills  (= random)
-"The nearest enemy is to the left of the crosshair."   -> 10.4 kills
-```
-
-Asking the model to **name an action** fails. Asking it to **verify a statement about the world**, and
-binding that statement to an action, works. It's a prompt-shape effect, not a capability the NLI fine-tune
-conferred.
-
----
-
-## 2. What we added
-
-### `code/doom.py` — `--hyp` / `--zero-shot-only`
-
-The hypothesis variants needed to reproduce the clip, plus a flag to skip the noisy-oracle collection and
-latent-MLP stage that the published script always runs.
-
-### `code/doom_live.py` — headed, real-time
-
-His script runs the engine in `PLAYER` mode with the window hidden, so the simulation blocks on every forward
-pass. Correct for scoring, but not watchable and not real-time. Changed:
-
-- **`ASYNC_PLAYER` at a fixed ticrate, window visible** — the world clock keeps running while the model
-  thinks. `set_render_all_frames(True)` draws the tics between decisions.
-- **Inference on a worker thread** — the main thread advances one tic at a time and applies the most recent
-  decision; stale premises are dropped rather than queued. The window holds ticrate regardless of forward-pass
-  time, and the policy re-decides as fast as it can instead of on a fixed 4-tic cadence.
-
-Measured: **34.6–35.0 tics/s against a 35 target**, 33–49 ms per decision at 25–29 decisions/s, 13.00 mean
-kills (max 14) over 3 episodes. Higher than the recorded 10.4 because the policy now updates at ~27 Hz rather
-than 8.75 Hz — same model, same hypotheses, more decisions per second.
-
-### Scenarios — it plays more than the one arena
-
-All 10 bundled ViZDoom scenarios plus the full game (`freedoom1.wad` / `freedoom2.wad` ship with the pip
-wheel), via `--scenario` / `--map`. Hypotheses whose action a scenario's cfg cannot express are dropped
-automatically, so `deadly_corridor` loses the `use` hypothesis instead of crashing.
-
-Walking a real level needed two fixes beyond adding movement actions:
-
-**Deadlock.** A bare turn or a bare `USE` leaves the player's position unchanged. Once the premise said
-"stuck" it said "stuck" forever and the policy spun in place for an entire episode. Recovery actions now
-translate the player (`veer right` = turn + forward, `open and step through` = use + forward).
-
-**Aiming.** Measured on this build:
-
-| | degrees | screen offset |
-|---|---|---|
-| binary turn, 1 tic | 1.76° | 0.020 |
-| binary turn, held one decision (1.3–2.5 tics) | 2.3–4.4° | 0.026–0.049 |
-| **the hit window** | **±2.7°** | **±0.03** |
-
-One turn step is as wide as the entire window it is trying to stop inside, so overshoot is structural — it
-oscillates around the target. Halving the step fixes settling but doubles acquisition time, which costs kills
-when enemies close from every side. Instead the model gets a coarse and a fine turn and picks between them,
-which is the thing a classifier is actually good at (`TURN_LEFT_RIGHT_DELTA` takes exact degrees/tic):
-
-```
-"far to the left of the crosshair."            -> swing left   (6.0°/tic)
-"just slightly to the left of the crosshair."  -> nudge left   (1.0°/tic)
-"lined up with the crosshair."                 -> attack
-"just slightly to the right of the crosshair." -> nudge right
-"far to the right of the crosshair."           -> swing right
-"No enemy is visible right now."               -> swing left   (scan)
-```
-
-Also widened the premise's centre band from 0.015 to 0.03 to match the real hit tolerance. The original
-wording called an enemy "left of the crosshair" at an offset a shot would already hit, so it kept turning off
-live targets.
-
-> Not yet validated. Single episodes with graded aim scored 16, 11 and 6 kills against 13.00 mean for the
-> coarse 3-way set. That is an anecdote, not a result — the matched-seed A/B has not been run. Graded aim also
-> doubles the batch (6 hypotheses vs 3), dropping decisions from ~27/s to ~14/s at ~62 ms.
-
-### `code/doom_web.py` — browser front-end
-
-Headless ViZDoom streamed into a web page: MJPEG into an `<img>`, SSE for telemetry. Stdlib plus PIL, no
-other dependencies. The sidebar carries what the recorded mp4 HUD carried — per-hypothesis P(entailment),
-chosen action, rolling chart, the exact premise text — except live.
-
-Reloading the page only reconnects the streams and never touched the simulation, so there are real controls:
-**restart episode** (`r`, same seed — deterministic re-run), **next episode** (`n`, skipped episodes are
-excluded from the mean), **pause/resume** (`space`, genuinely freezes the world since ASYNC only advances
-when the loop asks).
-
----
-
-## Running it
+## Run it
 
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cu128
-uv pip install --python .venv/bin/python "transformers>=5.0" accelerate datasets huggingface_hub \
-    vizdoom imageio imageio-ffmpeg pillow matplotlib scikit-learn flash-linear-attention
-huggingface-cli download AlexWortega/openjev --local-dir ./openjev_hf
+uv pip install --python .venv/bin/python "transformers>=5.0" accelerate huggingface_hub flash-linear-attention
+huggingface-cli download AlexWortega/openjev --local-dir ./openjev_hf   # 8.5 GB, needs ~10 GB VRAM
 
-cd code
+bun install
+bun run fetch-assets     # cook2.html + ~16 MB of art from vibe-arcade, and injects the agent bridge
 
-# reproduce the clip (headless, writes json + mp4)
-../.venv/bin/python doom.py --ckpt ../openjev_hf/qwen3.5-4b-nli \
-    --episodes 5 --seed 0 --hyp position --zero-shot-only \
-    --out ../results_repro/doom_zs_position.json \
-    --video-nli ../results_repro/doom_zs_position.mp4
-
-# watch it live in a native window
-../.venv/bin/python doom_live.py --scenario defend_the_center --profile aim
-
-# watch it live in a browser at http://127.0.0.1:8732/
-../.venv/bin/python doom_web.py --scenario freedoom2 --map map01
-
-../.venv/bin/python doom_live.py --list   # all scenarios
+bun run model            # terminal 1: the only Python process
+bun run dev              # terminal 2: http://127.0.0.1:8733/
 ```
 
-Needs ~10 GB free VRAM. `flash-linear-attention` is what gets decisions to ~35 ms; `causal-conv1d` is skipped
-because the only published version is built against a newer torch ABI than 2.11.
+Then press **run agent**.
 
----
+## Architecture
 
-## Errata in the write-up this started from (`tmp/GROK1.md`)
+```
+browser  web/index.html + web/app.js      m.js page; the agent loop lives here, next to the game
+         web/game/cook2.html (iframe)     vibe-arcade's game, with one injected bridge line
+         web/game/agent-hook.js           state -> premise, affordances -> hypotheses, argmax -> act
+   |
+   v  POST /api/decide
+bun      server/index.js                  express: static files + proxy. No game logic.
+   |
+   v  POST /score
+python   server/model_server.py           ~110 lines, stdlib HTTP. Holds weights. Knows nothing about cooking.
+```
 
-- `doom.py --video-nli` does **not** give the clip's policy. `--video` vs `--video-nli` only selects which
-  policy gets recorded; the latent MLP is trained either way.
-- Training hyperparameters were wrong. `qwen3.5-4b-nli/train_result.json` records the real run:
-  `--n-train 120000 --bs 32 --grad-accum 1 --max-len 256 --lr 2e-5 --grad-ckpt`, seed 42, final MNLI-matched
-  eval accuracy 0.8985.
+The agent loop runs in the browser because that is where the game is — reading state and applying an action
+are direct calls, not round trips. Python is one file that takes a premise and a list of hypotheses and
+returns P(entailment) for each.
 
-## What this is not
+### Why not llama.cpp
 
-Not TypeSafe's Jev, not RLCD, and it inherits none of Jev's calibration claims. openjev cannot emit free text
-— only 3-class scores over supplied options — but it can still pick the wrong option with a confident score.
+Checked in the source, not assumed. Sequence-classification heads in llama.cpp exist **only for BERT-family
+encoders** — `convert_hf_to_gguf.py` registers `ForSequenceClassification` for Bert, DistilBert, Roberta,
+XLMRoberta, NeoBERT and ModernBert, and no decoder-family model has one. `Qwen3_5` is not a known
+architecture there at all; `llama-arch.cpp` knows `QWEN3NEXT`, which is a different arch and causal-LM only.
+Hosting this checkpoint would mean implementing the Qwen3.5 hybrid attention stack *and* inventing a 3-label
+pooled head for a decoder. Hence the one Python file.
+
+### Driving the game
+
+cook2.html is click-and-drag, but we never synthesise pointer events at guessed coordinates. It already has
+the right seams — `G`, `interactives`, `stations`, `selected`, `select()`, `tryDrop()` — so
+`scripts/fetch-assets.mjs` injects one line at the end of its module handing that scope to our hook
+(`selected` as a getter, since it is a `let`). Actions are then enumerated from the game's own `accepts()`
+and `onTap()` and executed as direct calls.
+
+### The hypotheses
+
+Straight from the Doom result on the other branch: every candidate action is offered to the model as a
+**statement about the world that would justify it**, never as the name of the action. Naming the action
+scores at chance; verifying a statement works.
+
+```
+"There is payment sitting on the counter, and the seat it is on stays blocked
+ until it is picked up."                            -> collect the payment    0.98
+"A customer has ordered a soda and none has been poured yet."
+                                                    -> start pouring a soda   0.89
+"The raw patty in your hands needs to be cooked on the grill."
+                                                    -> put it on the grill    0.58
+```
+
+## Livelocks, and what they have in common
+
+Every bug worth recording here was the same bug: **an action that leaves the state unchanged wins the argmax
+again on the next tick, forever.** The model is not wrong in any of these; the action set is.
+
+| symptom | cause |
+|---|---|
+| three identical `"The grill should be used now."` | `Station.onTap()` is a no-op on the base class, so every station offered a dead hypothesis — one per grill pan, each costing a forward pass |
+| tapped the soda machine 8× with empty hands | the second tap returns `false`, and the premise never mentioned the machine, so the model could not tell the first one worked |
+| `pick up the full cup` ⇄ `put it back down` | a finished dish nobody ordered — the only move after picking it up is to put it down |
+| `pick up the empty plate` ⇄ `put it back down` | plates are assembled in place; lifting an empty one is never useful |
+| `pick up the cooking patty` ⇄ `put it back down` | taking food off the heat undoes progress |
+| `take a patty` ⇄ `put it back down` | no free pan to put it in |
+
+The fixes are all the same shape: do not offer an action that cannot change anything, and make sure the
+premise mentions every machine that works on its own, so "nothing happened" is distinguishable from
+"something is underway". There is also always a `wait` action, because food cooks and customers arrive on
+their own, so waiting is a real strategy and the list is never empty.
+
+**Uncollected payment stalls the level.** `freeSlot()` skips any seat that still has a coin pile on it —
+the game's own comment reads *"sitting piles throttle the wave"* — so money left on the counter stops the
+next customer from ever arriving. That one is not a livelock, just a rule worth knowing.
+
+## What it does and doesn't do
+
+It serves customers, collects tips, pours sodas and cooks patties, at **~80–110 ms and 10–17 hypotheses per
+decision, ~2.5 decisions/s**. It is not good at the game: it has no plan beyond the current tick, and on a
+quiet board its confidence collapses to 0.05–0.10 across every option, where the argmax is close to
+arbitrary. Nothing here is trained — it is the same frozen NLI checkpoint, zero-shot, being asked to check
+sentences about a diner.
+
+Not TypeSafe's Jev, not RLCD, and none of Jev's calibration claims. openjev cannot emit free text — only
+3-class scores over supplied options — but it can still pick the wrong option with a confident score.
+
+## Dev notes
+
+The browser holds ES modules across reloads even under `no-store`, and a stale module is invisible — it just
+keeps the old behaviour while you debug code that is never running. Both `web/app.js` and the game's
+`agent-hook.js` are therefore imported with a `?v=` cache-bust. `M.mount()` returns the reactive root
+instance but does **not** call `init()` on it; only `x-data` / `x-component` scopes get that automatically.

@@ -134,6 +134,33 @@ export function bind(ctx) {
       out.push({ id: out.length, label, hypothesis, run });
     }
 
+    /** Would anything accept what this tray produces? Taking an ingredient with nowhere to put it leads
+     *  straight back to putting it down, which is the same alternation as every other livelock here. */
+    function trayUseful(kind) {
+      const free = (Cls, test) => ctx.stations.some(st => st instanceof Cls && test(st));
+      switch (kind) {
+        case 'patty': case 'sausage': case 'cheese':
+          return free(ctx.Grill, st => st.slots.some(sl => !sl.item));
+        case 'fries':
+          return free(ctx.Fryer, st => !st.item);
+        case 'bun': case 'hotdog_bun': case 'carton_empty':
+          return free(ctx.PlateRack, st => st.slots.some(sl => sl.item && !(sl.item.stack || []).length));
+        default:
+          return true;
+      }
+    }
+
+    /** Would anything take this item if we picked it up? Trash is excluded -- it accepts everything, which
+     *  would make the test vacuous. */
+    function hasDestination(item) {
+      return interactives.some(o => {
+        const w = o.owner;
+        if (!w || w === item || w instanceof ctx.Trash) return false;
+        try { return o.customer ? w.accepts(item) : (w.accepts ? w.accepts(item, o.slot) : false); }
+        catch (e) { return false; }
+      });
+    }
+
     function actions() {
       const out = [];
       const sel = held();
@@ -158,15 +185,12 @@ export function bind(ctx) {
             const n = itemName(w);
             const onGrill = w.station instanceof ctx.Grill;
             const dish = w.dish && w.dish();
-            // A finished dish nobody ordered is a trap: picking it up leads to a state whose only move is
-            // to put it back down, and the pair alternates forever. Leave it where it is until it is wanted.
-            if (dish && !wanted.has(dish)) continue;
-            // Plates are assembled in place on the rack -- you drop ingredients onto them. Lifting a plate
-            // is only useful once it is a finished dish, and offering it otherwise creates the same
-            // pick-up / put-down alternation.
-            if (w.kind === 'plate' && !dish) continue;
-            // Food still on the heat: lifting it undoes progress, so the only follow-up is to put it back.
-            // Offer it only once it is actually done (or ruined, so it can be binned).
+            // The invariant behind every livelock in this game: if nothing will accept an item, picking it
+            // up leads to a state whose only move is to put it back down, and the two alternate forever.
+            // This one test covers an unordered finished dish, an empty plate, food still on the heat, and
+            // a cooked patty with no bun waiting for it. Burnt food is exempt so it can still be binned.
+            if (w.state !== 'burnt' && !hasDestination(w)) continue;
+            // Food on the heat is never worth lifting early, even if a plate would take it.
             if (onGrill && (w.state === 'raw' || w.state === 'cooking' || w.state === 'fresh')) continue;
             let hyp;
             if (onGrill) hyp = `The ${w.kind} on the grill is ${w.state} and should come off the heat now.`;
@@ -181,6 +205,7 @@ export function bind(ctx) {
             // (SodaMachine: `if (selected || this.cup) return false`), and offering an action that is a
             // no-op lets it win the argmax again on an unchanged state -- a livelock.
             if (w instanceof ctx.Tray) {
+              if (!trayUseful(w.kind)) continue;
               push(out, `take a ${w.kind} from the tray`,
                 `Another ${w.kind} is needed to fill an order that is still outstanding.`, () => w.onTap());
             } else if (w instanceof ctx.SodaMachine) {
