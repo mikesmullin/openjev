@@ -12,7 +12,5 @@ __pycache__/
 *.pyc
 _vizdoom.ini
 
-# fetched at setup: `bun run fetch-assets` (cook2.html + ~16 MB of art from mikesmullin/vibe-arcade)
-web/game/cook2.html
-web/game/assets/
 node_modules/
+bun.lock
