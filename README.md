@@ -1,4 +1,4 @@
-# openjev-repro
+# openjev
 
 A local reproduction of [AlexWortega/openjev](https://huggingface.co/AlexWortega/openjev) — Qwen3.5-4B
 fine-tuned as a 3-class NLI cross-encoder, used as a game policy by scoring hypotheses about the game state
