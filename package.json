@@ -1,12 +1,12 @@
 {
-  "name": "openjev-tetris",
+  "name": "openjev-mars",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "openjev (Qwen3.5-4B NLI cross-encoder) playing mikesmullin/tetris in the terminal",
+  "description": "openjev (Qwen3.5-4B NLI cross-encoder) picking targets in vibe-arcade's MARS RAID",
   "scripts": {
     "model": "./.venv/bin/python server/model_server.py --ckpt ./openjev_hf/qwen3.5-4b-nli --port 8750",
-    "tetris": "bun agent/tetris.js",
-    "demo": "./scripts/tmux-demo.sh"
+    "dev": "bun server/static.js",
+    "start": "bun server/static.js"
   }
 }

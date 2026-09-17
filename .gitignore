@@ -14,3 +14,6 @@ _vizdoom.ini
 
 node_modules/
 bun.lock
+
+# fetched at setup (see README): vibe-arcade's game, patched in place
+web/game/mars.html
