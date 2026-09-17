@@ -184,3 +184,143 @@ You **will not** get:
 Related repos that are *not* this result: [TheoLeeCJ/openjev](https://github.com/TheoLeeCJ/openjev) (frozen generative option-token logits, no NLI FT), [vinnylarouge/jevlike](https://github.com/vinnylarouge/jevlike) (tiny scorer on a frozen encoder), Harsha’s Qwen-2.5-1B-RLCD (parallel constrained decoding).
 
 Practical order: Path A first to confirm the interface, then `doom.py --video-nli` for the clip, then `train.py` only if you want to rebuild the 4B checkpoint yourself.
+
+---
+
+> User: if i wanted to test this against an actual doom game (ideally a modern OSS version that is hackable and runs natively on arch linux) what would you recommend? i want it headed so i can see the gameplay while model makes decisions in realtime
+
+ViZDoom is still the right first engine: it is real Doom, it already talks to OpenJev, and it can open a native window. I’ll give the headed setup plus the modern-port path if you want GZDoom/UZDoom instead.Use **ViZDoom with the window turned on** first. It is a real Doom engine (old ZDoom), it already has the observation API OpenJev’s `doom.py` expects, and it runs headed on Arch. A modern playable port like UZDoom/GZDoom is the better *game*, but it has no Python control surface, so you would rebuild the whole sensor/actuator loop.
+
+## Recommendation
+
+| Goal | Engine | Why |
+|---|---|---|
+| Watch OpenJev decide in realtime, tonight | **ViZDoom, headed** | Same engine + labels buffer + 3-button Defend the Center as the tweet. One flag flip. |
+| “I want a modern, hackable source port” | **UZDoom + Freedoom** | Current GZDoom-line flagship, ZScript, Vulkan, native Arch via AUR. No agent API. |
+| Vanilla-accurate / speedrun ports | Crispy, DSDA-Doom, Woof! | Great games. Worse for an external model. |
+
+Do not start with Chocolate Doom, Crispy, DSDA, or Woof if the point is “model drives the player.” None of them expose object labels or a Python step loop. UZDoom is the right *long-term* hack target; ViZDoom is the right *first* headed test.
+
+Arch reality: official repos only have `doomretro`. Everything else is AUR or pip.
+
+```bash
+# game data (free IWAD; drop-in for Doom 2)
+yay -S freedoom
+
+# modern port, for later / for you to play
+yay -S uzdoom-bin   # or uzdoom / gzdoom
+# IWADs land in /usr/share/games/doom/
+
+# the engine OpenJev already speaks
+sudo pacman -S --needed cmake gcc make sdl2 openal python
+pip install vizdoom
+```
+
+ViZDoom’s wheel also ships its own `freedoom2.wad`, so the headed demo works even before the AUR package finishes.
+
+---
+
+## Path 1 — headed ViZDoom (do this)
+
+Openjev’s harness hides the window on purpose:
+
+```python
+game.set_window_visible(False)
+game.set_mode(vzd.Mode.PLAYER)   # game pauses while the model thinks
+```
+
+For a watchable realtime window, change `make_game()` in `code/doom.py` to:
+
+```python
+def make_game(res=vzd.ScreenResolution.RES_640X480):
+    game = vzd.DoomGame()
+    game.load_config(os.path.join(vzd.scenarios_path, "defend_the_center.cfg"))
+    game.set_screen_resolution(res)
+    game.set_screen_format(vzd.ScreenFormat.RGB24)
+    game.set_labels_buffer_enabled(True)
+    game.set_window_visible(True)          # native X11/Wayland window
+    game.set_sound_enabled(True)
+    game.set_render_hud(True)
+    game.set_render_weapon(True)
+    game.set_render_crosshair(True)
+    game.set_render_all_frames(True)       # interpolate the 4 skipped tics
+    game.set_mode(vzd.Mode.ASYNC_PLAYER)   # clock keeps running during inference
+    game.set_ticrate(35)                   # vanilla Doom rate
+    game.set_episode_timeout(2100)
+    game.init()
+    return game
+```
+
+Then:
+
+```bash
+python code/doom.py \
+  --ckpt qwen3.5-4b-nli \
+  --episodes 5 \
+  --out results/doom_headed.json
+```
+
+What you should see: a normal Doom window, pistol in the circular arena, model picking turn-left / turn-right / attack about every 4 tics (~114 ms of game time).
+
+Two timing modes, pick one:
+
+- **`ASYNC_PLAYER`** — the game does not freeze while Qwen runs. This is what “realtime” means. If the 4B forward pass is 90–180 ms, the agent is a tick or two late. Fine for watching.
+- **`PLAYER` (sync)** — the sim waits on the model. Decisions are exact, the window hitch-steps. Use this only if you care about matching the recorded clip, not about “it feels like a game.”
+
+`set_render_all_frames(True)` only matters when the window is visible; it draws the skipped tics so the headed view is not a 8 fps slideshow.
+
+Same engine can load a full map instead of the arena, still headed:
+
+```python
+game.set_doom_game_path("/usr/share/games/doom/freedoom2.wad")
+game.set_doom_map("map01")
+# leave load_config() off, or point at a custom .cfg
+# add buttons: MOVE_FORWARD, MOVE_BACKWARD, TURN_LEFT, TURN_RIGHT, ATTACK, USE
+```
+
+On MAP01 the tweet’s 3-way policy will look drunk. That is expected: OpenJev was trained to be a turret, not a walker. Expand the hypothesis set (`"The correct action is: move forward"`, `"open the door"`, …) before judging the model on a real level.
+
+---
+
+## Path 2 — modern port you can actually hack
+
+If “modern OSS Doom on Arch” is the requirement, use **UZDoom**, not GZDoom. UZDoom is the community fork that took over after the 2025 GZDoom split; `uzdoom-bin` on AUR is currently 5.0.1. Same ZScript surface, actively maintained.
+
+```bash
+yay -S uzdoom-bin freedoom
+uzdoom -iwad /usr/share/games/doom/freedoom2.wad
+```
+
+This is the game you want to *look at*. It is not the game you want to *wire to OpenJev first*. There is no Python SDK, no labels buffer, and `SendNetworkEvent` is in-engine only.
+
+Two honest integration options:
+
+**A. Vision + key inject (afternoon project)**
+
+Run UZDoom headed, grab the window (`mss` or `grim` on Wayland), score OpenJev hypotheses on the pixels, inject keys into the focused window with `ydotool` / `dotool`. No engine patch. You lose object IDs and ammo unless you OCR the HUD. This is the only way to keep “I am watching a real modern port” without writing ZScript.
+
+**B. ZScript observer (weekend project)**
+
+An `EventHandler` on `WorldTick` dumps a JSON line (player x/y/angle, health, ammo, actors in FOV) to a named pipe. Python reads the pipe, runs OpenJev, writes a command file. The handler applies `+forward` / `+attack` next tic. ZScript cannot open arbitrary sockets portably; file/pipe polling is the reliable hack. This is the actually hackable path, and it is why UZDoom beats Crispy/DSDA for your use case.
+
+Do not fork the C++ engine to add a Python module. That is how you spend a month not testing the model.
+
+---
+
+## What I would not use for this
+
+- **Chocolate / Crispy** — faithful, not an agent host.
+- **DSDA-Doom / Woof!** — excellent modern Boom/MBF21 ports, still no observation API.
+- **Helion** — modern C# renderer, same problem.
+- **cydoomgeneric** — you implement `draw_frame` / `get_key` in Python, which is hackable, but it is vanilla doomgeneric. No Defend the Center scenario, no labels buffer, you rebuild rendering.
+- **uinput into GZDoom on day one** — works, but you are debugging two systems at once (window focus + a 3-button policy on a 20-button game).
+
+---
+
+## Practical order
+
+1. `pip install vizdoom` and flip `doom.py` to headed `ASYNC_PLAYER`. That answers “can I watch the model play Doom.”
+2. Point the same harness at `freedoom2.wad` MAP01 only after you grow the action hypotheses.
+3. If you still want a modern window, park UZDoom next to it and either overlay vision+ydotool or write the ZScript pipe. That is the long-term hackable stack on Arch.
+
+If you want, I can sketch the exact `make_game()` + extra-button hypothesis list for Freedoom MAP01 so the headed ViZDoom run is a real level instead of the arena.
