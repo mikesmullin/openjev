@@ -1,0 +1,16 @@
+{
+  "name": "openjev-cook",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "openjev (Qwen3.5-4B NLI cross-encoder) playing vibe-arcade's cook2 cooking game",
+  "scripts": {
+    "fetch-assets": "bun scripts/fetch-assets.mjs",
+    "model": "./.venv/bin/python server/model_server.py --ckpt ./openjev_hf/qwen3.5-4b-nli --port 8750",
+    "dev": "bun server/index.js",
+    "start": "bun server/index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
