@@ -1,0 +1,27 @@
+# Example inbox taxonomy — safe to commit. Copy to config.yaml and edit:
+#   cp config.yaml.example config.yaml
+# config.yaml is gitignored and holds your real Gmail folders + hypothesis sentences.
+folders:
+  - name: Receipts
+    description: This is a receipt, invoice, or order confirmation for something the recipient bought, with an amount stated.
+  - name: Statements
+    description: This is a periodic account statement from a bank or credit card.
+  - name: Travel
+    description: "This is about a trip: a flight, hotel, reservation, or ticket."
+  - name: Newsletters
+    description: "This is a periodical the recipient subscribed to and reads at leisure: a digest or roundup."
+  - name: Work
+    description: This addresses the recipient as an employee, about internal company matters.
+
+operations:
+  - op: delete
+    description: "This is a promotional advertisement from a shop, offering a sale, a discount, a deal or reward points."
+  - op: skip
+    description: This needs the operator to read it and decide personally, because it concerns something only they can judge.
+  - op: archive
+    description: This is ordinary correspondence that has served its purpose and just needs filing away out of the inbox.
+
+spam_signals:
+  - The message promises the reader a large sum of money and asks them to click a link or confirm personal details.
+  - The message uses urgent capitalised excitement and asks the reader to act immediately on an unexpected windfall.
+  - The sender is unknown to the recipient and the message asks for bank, password or payment information.

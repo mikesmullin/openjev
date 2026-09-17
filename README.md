@@ -22,20 +22,23 @@ ours. The other branches keep his scripts. MIT, like his.
 ## What this replaces
 
 A generative LLM pass over an inbox, of the kind `agl-agents/personal-email` runs. Instead of prompting a
-model to emit JSON, each email is put to the cross-encoder as **four independent multiple-choice questions**:
+model to emit JSON, each email is put to the cross-encoder as two questions:
 
-| question | answers |
-|---|---|
-| Category | Brand deal · Cold pitch · Personal · Newsletter · Marketing · Receipt · Service alert · Notification · Other |
-| Reply | Yes · No |
-| Sender | Human · Auto |
-| Urgency | Today · This week · Whenever |
+**Recommended action** — one *flat* choice over every operation: `delete`, `skip`, `archive`, and
+`move to X` for each Gmail folder listed in `config.yaml`. Copy `config.yaml.example` to `config.yaml`
+and put your own folder names plus one positive, checkable sentence per folder describing what
+belongs there (`config.yaml` is gitignored and never committed).
 
-Each answer is a sentence. All 16 sentences are scored against the email in **one batched forward pass**;
-the argmax within each group is the answer and its share of the group's mass is the confidence.
+**Spam** — not a classification. Three observable spam patterns are scored and the highest is reported as a
+percentage.
 
-**Tokens out is structurally zero** — there is nothing to parse, nothing to retry, and no way to get invalid
-JSON back.
+Flat rather than "operation first, then folder" for two reasons. A two-stage design needs an intermediate
+option meaning "belongs in *some* folder", and there is no way to phrase that which is not vague — vague
+hypotheses have beaten specific ones repeatedly here. And since the premise is re-encoded once per statement
+and dominates the cost, two stages would pay for it twice.
+
+**Confidence is a by-product**, not an answer: the chosen operation's share of the probability mass across
+all operations. **Tokens out is structurally zero** — nothing to parse, nothing to retry, no invalid JSON possible.
 
 ## Run it
 
@@ -46,6 +49,7 @@ uv pip install --python .venv/bin/python "transformers>=5.0" accelerate huggingf
 huggingface-cli download AlexWortega/openjev --local-dir ./openjev_hf   # 8.5 GB, ~10 GB VRAM
 
 bun install
+cp config.yaml.example config.yaml   # then edit with your folders
 bun run model                          # terminal 1: the only Python process
 EMAIL_DB=/path/to/db bun run dev       # terminal 2: http://127.0.0.1:8735/
 ```
