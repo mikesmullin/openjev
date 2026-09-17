@@ -1,0 +1,57 @@
+{
+  "args": {
+    "ckpt": "../openjev_hf/qwen3.5-4b-nli",
+    "episodes": 5,
+    "collect_episodes": 12,
+    "noise": 0.2,
+    "eps": 0.1,
+    "seed": 0,
+    "out": "../results_repro/doom_4b.json",
+    "video": "../results_repro/doom_mlp.mp4",
+    "video_nli": "../results_repro/doom_nli.mp4",
+    "hyp": "action",
+    "zero_shot_only": false
+  },
+  "results": {
+    "random": {
+      "mean_kills": 1.0,
+      "max_kills": 2,
+      "mean_reward": 0.0,
+      "mean_steps": 81.0,
+      "lat_ms": 0.0010075277338412953
+    },
+    "oracle": {
+      "mean_kills": 18.8,
+      "max_kills": 22,
+      "mean_reward": 17.8,
+      "mean_steps": 275.0,
+      "lat_ms": 0.0005621809085862675
+    },
+    "nli": {
+      "mean_kills": 1.0,
+      "max_kills": 1,
+      "mean_reward": 0.0,
+      "mean_steps": 73.0,
+      "lat_ms": 34.139175657765094,
+      "hyp": "action",
+      "hypotheses": [
+        "The correct action is: turn left",
+        "The correct action is: turn right",
+        "The correct action is: attack"
+      ],
+      "action_map": [
+        0,
+        1,
+        2
+      ]
+    },
+    "mlp_val_acc": 0.9727272727272728,
+    "mlp": {
+      "mean_kills": 14.4,
+      "max_kills": 20,
+      "mean_reward": 13.4,
+      "mean_steps": 234.8,
+      "lat_ms": 34.48585100171257
+    }
+  }
+}

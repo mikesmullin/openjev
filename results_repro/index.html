@@ -1,0 +1,32 @@
+<!doctype html><meta charset="utf-8"><title>openjev Doom repro</title>
+<style>
+ body{background:#0b1519;color:#e4efec;font:15px/1.5 ui-monospace,monospace;margin:0;padding:28px}
+ h1{font-size:19px;margin:0 0 4px} p{color:#8aa6ab;margin:0 0 20px}
+ video{width:100%;max-width:1100px;border:1px solid #24404a;border-radius:6px;background:#000;display:block}
+ section{margin-bottom:34px} h2{font-size:16px;margin:0 0 2px}
+ .m{color:#8aa6ab;font-size:13px;margin:0 0 10px}
+ b{color:#3fbf7f}
+</style>
+<h1>openjev — Doom, Defend the Center — local reproduction</h1>
+<p>Qwen3.5-4B NLI cross-encoder, RTX 5090, bf16. One decision per 4 tics (114&nbsp;ms budget).</p>
+
+<section>
+<h2>zero-shot NLI &mdash; <code>--hyp position</code> &mdash; this is the tweet</h2>
+<p class="m">No training at all. Premise = game state as text, hypotheses = statements about where the nearest enemy is,
+argmax P(entailment) &rarr; action. Best of 5 episodes: <b>16 kills</b> (run mean 10.4, his 11.0). Decision ~47&ndash;64&nbsp;ms.</p>
+<video src="doom_zs_position.mp4" controls autoplay muted loop playsinline></video>
+</section>
+
+<section>
+<h2>zero-shot NLI &mdash; <code>--hyp action</code> &mdash; the published script's variant</h2>
+<p class="m">Same model, same state. Only the hypothesis wording changes to
+&ldquo;The correct action is: turn left / turn right / attack&rdquo;. Collapses to <b>1 kill</b>, identical to random.</p>
+<video src="doom_nli.mp4" controls muted loop playsinline></video>
+</section>
+
+<section>
+<h2>latent + MLP head</h2>
+<p class="m">Small MLP on the frozen pooled hidden state, trained on noisy-oracle rollouts.
+Best of 5: <b>20 kills</b> (run mean 14.4, his 16.0; oracle heuristic 18.8).</p>
+<video src="doom_mlp.mp4" controls muted loop playsinline></video>
+</section>

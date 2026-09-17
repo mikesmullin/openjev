@@ -23,6 +23,24 @@ from latent_mlp import fit, predict, grouped_split
 ACTIONS = ["turn left", "turn right", "attack"]
 BUTTONS = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 FRAME_SKIP = 4
+# Hypothesis variants. Each variant is a list of statements about the state; every statement is bound to an action
+# (index into ACTIONS). "action" is the naive variant shipped in the published script (it collapses to random);
+# "position"/"position_none" are the state-statement variants reported in results/full_report.md.
+HYPS = {
+    "action": ([f"The correct action is: {a}" for a in ACTIONS], [0, 1, 2]),
+    "position": ([
+        "The nearest enemy is to the left of the crosshair.",
+        "The nearest enemy is to the right of the crosshair.",
+        "The nearest enemy is exactly on the crosshair.",
+    ], [0, 1, 2]),
+    "position_none": ([
+        "The nearest enemy is to the left of the crosshair.",
+        "The nearest enemy is to the right of the crosshair.",
+        "The nearest enemy is exactly on the crosshair.",
+        "There is no enemy in view.",
+    ], [0, 1, 2, 0]),
+}
+
 ENEMY_NAMES = {"Zombieman": "zombie soldier", "ShotgunGuy": "shotgun guard", "Imp": "imp", "Demon": "pinky demon",
                "MarineChainsaw": "chainsaw marine", "MarineChainsawVzd": "chainsaw marine", "ChaingunGuy": "chaingunner",
                "HellKnight": "hell knight", "Cacodemon": "cacodemon", "LostSoul": "lost soul", "Revenant": "revenant", "BaronOfHell": "baron of hell"}
@@ -85,7 +103,9 @@ def render_text(s):
 
 
 class Scorer:
-    def __init__(self, ckpt):
+    def __init__(self, ckpt, hyp="action"):
+        self.hyp_name = hyp
+        self.hypotheses, self.action_map = HYPS[hyp]
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         self.tok = AutoTokenizer.from_pretrained(ckpt)
         self.model = AutoModelForSequenceClassification.from_pretrained(ckpt, dtype=torch.bfloat16).cuda().eval()
@@ -107,7 +127,14 @@ class Scorer:
         return np.concatenate(X), np.concatenate(L)
 
     def pair_texts(self, s):
-        return [self.template.format(premise=render_text(s), hypothesis=f"The correct action is: {a}") for a in ACTIONS]
+        return [self.template.format(premise=render_text(s), hypothesis=h) for h in self.hypotheses]
+
+    def action_probs(self, p_ent):
+        """Fold per-hypothesis P(entailment) into one score per action (max over the hypotheses bound to it)."""
+        out = np.zeros(len(ACTIONS), dtype=np.float64)
+        for h, a in enumerate(self.action_map):
+            out[a] = max(out[a], float(p_ent[h]))
+        return out
 
 
 def play(game, policy, seed, record=False):
@@ -144,7 +171,11 @@ def main():
     ap.add_argument("--out", default="results/doom_4b.json")
     ap.add_argument("--video", default=None, help="mp4 of the best MLP episode with option probabilities")
     ap.add_argument("--video-nli", default=None)
+    ap.add_argument("--hyp", default="action", choices=list(HYPS))
+    ap.add_argument("--zero-shot-only", action="store_true", help="skip the noisy-oracle collection + latent MLP stage")
     args = ap.parse_args()
+    if args.hyp != "action" and not args.zero_shot_only:
+        ap.error("--hyp other than 'action' requires --zero-shot-only (the MLP stage assumes one hypothesis per action)")
     rng = random.Random(args.seed)
     game = make_game()
     results, replays = {}, {}
@@ -161,13 +192,25 @@ def main():
 
     evaluate("random", lambda s: rng.randrange(3))
     evaluate("oracle", oracle)
-    scorer = Scorer(args.ckpt)
+    scorer = Scorer(args.ckpt, args.hyp)
 
     def nli_policy(s):
         _, L = scorer.latents(scorer.pair_texts(s))
-        p = torch.softmax(torch.tensor(L), -1).numpy()[:, 1]
-        return int(p.argmax()), p
+        p_ent = torch.softmax(torch.tensor(L), -1).numpy()[:, 1]
+        pa = scorer.action_probs(p_ent)
+        return int(pa.argmax()), pa
     evaluate("nli", nli_policy, record=bool(args.video_nli))
+    results["nli"]["hyp"] = args.hyp
+    results["nli"]["hypotheses"] = scorer.hypotheses
+    results["nli"]["action_map"] = scorer.action_map
+
+    if args.zero_shot_only:
+        game.close()
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        json.dump({"args": vars(args), "results": results}, open(args.out, "w"), indent=2)
+        if args.video_nli and "nli" in replays:
+            write_video(replays["nli"], args.video_nli, "nli")
+        return
 
     states, labels = [], []
     for i in range(args.collect_episodes):
