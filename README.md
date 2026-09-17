@@ -4,15 +4,27 @@ A local reproduction of [AlexWortega/openjev](https://huggingface.co/AlexWortega
 fine-tuned as a 3-class NLI cross-encoder, used as a game policy by scoring hypotheses about the game state
 and taking the argmax entailment. Reproduced on a single RTX 5090, then extended so it can be watched live.
 
-**This is not a GitHub fork.** The original lives only on Hugging Face; there is no `AlexWortega/openjev`
-on GitHub to fork from. The layout below stands in for one:
+**This is not a GitHub fork.** The original lives only on Hugging Face — all 122 repos on
+[github.com/AlexWortega](https://github.com/AlexWortega) were checked and none is an equivalent, which fits
+how he worked: his `code/SKILL.md` describes rsyncing to remote GPU boxes and publishing straight to the Hub.
+There is nothing on GitHub to fork from.
 
-| branch | contents |
-|---|---|
-| `main` | his `code/` and `modeling_openjev.py` fetched verbatim from the HF repo at `8c9db06`, untouched |
-| `openjev-repro` *(default)* | everything below |
+Attribution is carried in the history instead. The root commit `63ab36c` is his `code/` and
+`modeling_openjev.py` fetched verbatim from the HF repo at `8c9db06` and left untouched, so:
 
-So `git diff main..openjev-repro` is exactly our contribution. His work is MIT; so is this.
+```bash
+git diff 63ab36c            # exactly our contribution, nothing of his mixed in
+```
+
+Hugging Face repos are real git repos, so his history is fetchable directly if you want the true lineage
+(his tree tracks the 8.5 GB checkpoint through LFS — clone with `GIT_LFS_SKIP_SMUDGE=1`):
+
+```bash
+git remote add upstream https://huggingface.co/AlexWortega/openjev
+git fetch upstream          # upstream/main is 8c9db06, the SHA our root commit vendors
+```
+
+His work is MIT; so is this.
 
 The 8.5 GB checkpoint is not in git. Fetch it with:
 
