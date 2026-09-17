@@ -8,14 +8,32 @@
 const TICK = 900;          // ms between decisions; target choice is a tactical call, not a per-frame one
 const HISTORY = 120;       // samples kept for the sparkline
 
-/* Series are by target *kind*, not by candidate: the candidate list churns every tick as things die,
-   but "saucer / building / scorpion" are stable enough to draw a line through. */
-const SERIES = [
-  { key: 'saucer',   label: 'saucer',   color: '#e5533d' },
-  { key: 'building', label: 'building', color: '#f2b134' },
-  { key: 'boss',     label: 'scorpion', color: '#3fbf7f' },
-  { key: 'other',    label: 'other',    color: '#4aa3df' },
-];
+/* One line per *option*, the way the Doom HUD plotted one line per action.
+ *
+ * The candidate list churns -- saucers spawn and die, buildings fall -- so there is no fixed row to hang a
+ * line on. Instead each option is content-addressed: hash a stable identity for the thing being shot at
+ * ("saucer:17", "building:3", "boss:clawL") down to six hex digits, and that is the series id.
+ *
+ * Hashing the rendered hypothesis would NOT work: the sentences carry live numbers ("49 metres away",
+ * "67 percent"), so the text changes every tick and every tick would mint a new series.
+ */
+function hash6(str) {
+  let h = 0x811c9dc5;                         // FNV-1a, 32-bit
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return ((h >>> 8) & 0xffffff).toString(16).padStart(6, '0');
+}
+/* Colour straight off the hash, so a series keeps its colour for life without a lookup table. Kind sets
+   the hue family, the hash varies it within that family, so saucers stay reddish and the boss greenish. */
+/* The other half of the idea: hash the *template* rather than the rendered sentence -- same string with the
+   live numbers blanked out. Identity decides which line a point belongs to (no averaging); the template
+   decides its colour family and its legend entry, so twelve saucers read as one colour, not twelve. */
+const templateOf = (hyp) => hyp.replace(/\d+(\.\d+)?/g, '{{n}}');
+
+const HUE = { saucer: 8, building: 40, boss: 145, other: 205 };
+function colorOf(uid, kind) {
+  const n = parseInt(hash6(uid), 16);
+  return `hsl(${(HUE[kind] ?? 280) + (n % 40) - 20} 72% ${52 + (n >> 8) % 18}%)`;
+}
 
 export function Agent(M) {
   return {
@@ -66,18 +84,25 @@ export function Agent(M) {
 
     <div class="card">
       <div class="k">last 120 decisions</div>
-      <svg viewBox="0 0 480 150" preserveAspectRatio="none">
-        <line x1="0" y1="149" x2="480" y2="149" stroke="#43261f"></line>
-        <line x1="0" y1="75"  x2="480" y2="75"  stroke="#43261f" stroke-dasharray="3 4"></line>
+      <svg viewBox="-16 -6 500 174" preserveAspectRatio="none">
+        <text x="-4" y="4"   fill="#b08c80" font-size="9" text-anchor="end">1</text>
+        <text x="-4" y="78"  fill="#b08c80" font-size="9" text-anchor="end">0.5</text>
+        <text x="-4" y="152" fill="#b08c80" font-size="9" text-anchor="end">0</text>
         <line x1="0" y1="1"   x2="480" y2="1"   stroke="#43261f"></line>
+        <line x1="0" y1="75"  x2="480" y2="75"  stroke="#43261f" stroke-dasharray="3 4"></line>
+        <line x1="0" y1="149" x2="480" y2="149" stroke="#43261f"></line>
         <template x-for="s in lines()" :key="s.key">
-          <polyline fill="none" stroke-width="2" :stroke="s.color" :points="s.points"></polyline>
+          <polyline fill="none" stroke-width="1.6" :stroke="s.color" :points="s.points"></polyline>
+        </template>
+        <template x-for="t in ticks()" :key="t.key">
+          <rect :x="t.x" y="152" width="2.4" height="9" :fill="t.color"></rect>
         </template>
       </svg>
       <div class="legend">
-        <template x-for="s in series" :key="s.key">
+        <template x-for="s in legend()" :key="s.key">
           <span><i :style="'background:' + s.color"></i><span x-text="s.label"></span></span>
         </template>
+        <span class="muted">ticks = chosen</span>
       </div>
     </div>
 
@@ -99,19 +124,46 @@ export function Agent(M) {
 </main>
 </div>`,
 
-    series: SERIES,
+    /** Legend: one entry per template on the current ballot, not per option. */
+    legend() {
+      const m = new Map();
+      for (const o of this.options) {
+        const t = templateOf(o.hypothesis);
+        if (!m.has(t)) m.set(t, { key: hash6(t), color: o.color, label: o.label });
+      }
+      return [...m.values()];
+    },
 
-    /** One polyline per kind: highest probability that kind attracted at each tick. */
+    /** One polyline per option id. Gaps (the option did not exist that tick) break the line rather than
+     *  being drawn through, so a saucer that dies and a new one that spawns are visibly separate. */
     lines() {
       const h = this.history;
       if (h.length < 2) return [];
-      const step = 480 / Math.max(1, HISTORY - 1);
       const start = Math.max(0, h.length - HISTORY);
-      return SERIES.map(s => ({
-        ...s,
-        points: h.slice(start).map((row, i) =>
-          `${(i * step).toFixed(1)},${(149 - (row[s.key] || 0) * 148).toFixed(1)}`).join(' '),
-      })).filter(s => s.points);
+      const win = h.slice(start);
+      const step = 480 / Math.max(1, HISTORY - 1);
+      const seen = new Map();
+      win.forEach(row => Object.entries(row.probs).forEach(([sid, v]) => seen.set(sid, v.color)));
+
+      const out = [];
+      for (const [sid, color] of seen) {
+        let seg = [];
+        win.forEach((row, i) => {
+          const e = row.probs[sid];
+          if (e) seg.push(`${(i * step).toFixed(1)},${(149 - e.p * 148).toFixed(1)}`);
+          else if (seg.length) { if (seg.length > 1) out.push({ key: sid + ':' + out.length, color, points: seg.join(' ') }); seg = []; }
+        });
+        if (seg.length > 1) out.push({ key: sid + ':' + out.length, color, points: seg.join(' ') });
+      }
+      return out;
+    },
+
+    /** The strip along the baseline: one tick per decision, coloured by what was actually chosen. */
+    ticks() {
+      const h = this.history;
+      const start = Math.max(0, h.length - HISTORY);
+      const step = 480 / Math.max(1, HISTORY - 1);
+      return h.slice(start).map((row, i) => ({ key: i, x: (i * step).toFixed(1), color: row.pickColor }));
     },
 
     async init() {
@@ -156,9 +208,13 @@ export function Agent(M) {
       const t = this.mars.targets();
       const near = (k, n) => t.filter(x => x.kind === k).slice(0, n);
       const list = [];
-      const add = (target, label, hypothesis, kind) =>
-        list.push({ id: list.length, label, hypothesis, kind, target,
-                    color: (SERIES.find(x => x.key === kind) || SERIES[3]).color });
+      const add = (target, label, hypothesis, kind, uid) => {
+        const u = uid || target.uid || `${kind}:${list.length}`;
+        list.push({ id: list.length, label, hypothesis, kind, target, uid: u,
+                    sid: hash6(u),                                  // identity -> which line
+                    tid: hash6(templateOf(hypothesis)),             // template -> colour family + legend
+                    color: colorOf(u, kind) });
+      };
 
       for (const b of near('boss', 2))
         add(b, `attack ${b.label}`,
@@ -182,11 +238,11 @@ export function Agent(M) {
       if (s.bossState === 'dormant')
         add({ wake: true }, 'wake the scorpion',
             'The colony is already in ruins and the buried scorpion is the only enemy left worth attacking.',
-            'other');
+            'other', 'other:wake');
       if (s.hull < 45)
         add({ retreat: true }, 'break off and climb',
             `The ship is badly damaged at ${s.hull} percent hull and needs to break off before it is destroyed.`,
-            'other');
+            'other', 'other:retreat');
 
       const L = [];
       L.push(`A raid on a Mars colony, flying a gunship. Hull is at ${s.hull} percent and the ship is ${s.altitude} metres up.`);
@@ -239,10 +295,10 @@ export function Agent(M) {
       else if (pick.target.retreat) this.mars.release();
       else this.mars.aim(pick.target);
 
-      // One sample per kind per tick: the best probability anything of that kind attracted.
-      const row = {};
-      for (const s of SERIES) row[s.key] = Math.max(0, ...this.options.filter(o => o.kind === s.key).map(o => o.p));
-      this.history.push(row);
+      // One sample per *option* per tick, keyed by its identity hash, plus what was actually chosen.
+      const probs = {};
+      for (const o of this.options) probs[o.sid] = { p: o.p, color: o.color };
+      this.history.push({ probs, pickColor: pick.color, pickLabel: pick.label });
       if (this.history.length > HISTORY * 2) this.history = this.history.slice(-HISTORY);
 
       this.game = this.mars.state();

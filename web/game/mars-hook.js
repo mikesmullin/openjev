@@ -32,7 +32,7 @@ export function bind(ctx) {
       if (key === 'clawR' && !(ctx.bossClaws.R && ctx.bossClaws.R.visible)) continue;
       // live() is the liveness test as well as the tracker: it returns null once the target is gone, and
       // the autopilot releases on null. Without it the ship keeps shooting a building it already destroyed.
-      out.push({ kind: 'boss', key, label: LABEL[key], hp, max,
+      out.push({ kind: 'boss', key, uid: `boss:${key}`, label: LABEL[key], hp, max,
                  pos: ctx.getBossPartWorldPos(key).clone(),
                  live: () => (ctx.bossHP[key] > 0 && (PHASE_PARTS[ctx.bossPhase] || []).includes(key)
                               ? ctx.getBossPartWorldPos(key) : null) });
@@ -47,12 +47,14 @@ export function bind(ctx) {
     for (const a of aliens) {
       if (!a || !a.pos) continue;
       out.push({ kind: 'saucer', label: 'an alien saucer', pos: a.pos.clone(), dist: a.pos.distanceTo(from),
+                 uid: `saucer:${a.uid}`,
                  live: () => (aliens.includes(a) ? a.pos : null) });
     }
     for (const b of buildings) {
       if (!b || !b.alive) continue;
       out.push({ kind: 'building', label: 'a colony building', bd: b, pos: b.center.clone(),
                  hp: b.hp, max: b.maxHp, dist: b.center.distanceTo(from),
+                 uid: `building:${buildings.indexOf(b)}`,
                  live: () => (b.alive ? b.center : null) });
     }
     for (const p of bossParts()) out.push({ ...p, dist: p.pos.distanceTo(from) });
