@@ -11,7 +11,13 @@
     --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono)}
+  html,body{height:100%}
+  /* The page itself never scrolls: the stage fills the space it is given and the sidebar scrolls inside
+     its own column, so on a 4K display the game gets the real estate instead of a 900px letterbox. */
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono);overflow:hidden}
+  /* m.js renders the component inside a wrapper div, so the flex chain has to pass through it or the
+     stage has no height to fill. */
+  #app,#app>div{height:100%;min-height:0;display:flex;flex-direction:column}
   header{padding:13px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
   h1{font-size:16px;font-weight:600}
   .sub{color:var(--dim);font-size:12px}
@@ -21,10 +27,29 @@
   button:hover:not(:disabled){background:#2e1c17;border-color:var(--amber)}
   button:disabled{opacity:.4;cursor:default}
   button.on{border-color:var(--green);color:var(--green)}
-  main{display:flex;gap:16px;padding:16px;align-items:flex-start;flex-wrap:wrap}
-  #stage{flex:0 0 auto;width:900px;max-width:100%;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#000}
-  #stage iframe{display:block;width:900px;height:600px;max-width:100%;border:0}
-  aside{flex:1;min-width:400px;display:flex;flex-direction:column;gap:13px}
+  main{flex:1 1 auto;min-height:0;display:flex;gap:16px;padding:16px;align-items:stretch}
+  /* flex:1 1 0 + min-width:0 lets the stage grow into all remaining width; the game recomputes
+     camera.aspect from its own innerWidth/innerHeight on resize, so any shape is fine. */
+  #stage{flex:1 1 0;min-width:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#000}
+  #stage iframe{display:block;width:100%;height:100%;border:0}
+  aside{flex:0 0 clamp(360px,26vw,620px);min-width:0;min-height:0;overflow-y:auto;
+        display:flex;flex-direction:column;gap:13px;padding-right:4px}
+  /* Narrow screens: stack, and give the game a sensible fixed share of the height. */
+  @media (max-width:1100px){
+    body{overflow:auto}
+    #app,#app>div{height:auto}
+    main{flex-direction:column;align-items:stretch}
+    #stage{flex:0 0 auto;height:min(60vh,520px)}
+    aside{flex:0 0 auto;overflow:visible}
+  }
+  /* Overlay-style scrollbars: narrow, rounded, dark, and only visible against the track on hover. */
+  *{scrollbar-width:thin;scrollbar-color:#5c3a30 transparent}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#4a2e26;border-radius:99px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#6d453a;background-clip:content-box}
+  ::-webkit-scrollbar-corner{background:transparent}
+
   .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
   .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:9px}
   .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
