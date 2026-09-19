@@ -83,6 +83,7 @@ export function Agent(M) {
     running: false, arming: false, decisions: 0,
     premise: '', options: [], chosen: null, history: [], game: {},
     posture: null, postureP: 0, threat: null, wake: null, committed: null,
+    runStartedAt: null, survivedMs: 0, bestMs: 0, outcome: '',
     // Latency bookkeeping. rtt is measured in the browser around the fetch, so it is what the agent
     // actually waits for; serverMs is what the adapter spent talking to llama.cpp. The gap between them
     // is HTTP and proxy overhead, and it is worth being able to see it.
@@ -116,6 +117,18 @@ export function Agent(M) {
         <div class="stat"><b x-text="game.buildings ?? 0"></b><span>colony left</span></div>
         <div class="stat"><b x-text="game.saucers ?? 0"></b><span>saucers</span></div>
         <div class="stat"><b x-text="game.bossState || '—'"></b><span x-text="'scorpion' + (game.bossPhase ? ' · ' + game.bossPhase : '')"></span></div>
+      </div>
+    </div>
+
+    <!-- How long the model keeps the ship alive. The comparable score across branches: every other
+         number here measures the model, this one measures the decisions. -->
+    <div class="card">
+      <div class="k">survival</div>
+      <div class="stats">
+        <div class="stat"><b x-text="fmt(survivedMs)"></b><span x-text="outcome || 'seconds alive'"></span></div>
+        <div class="stat"><b x-text="fmt(bestMs)"></b><span>best run</span></div>
+        <div class="stat"><b x-text="game.buildings ?? 0"></b><span>colony left</span></div>
+        <div class="stat"><b x-text="game.bossState || '—'"></b><span>scorpion</span></div>
       </div>
     </div>
 
@@ -220,6 +233,28 @@ export function Agent(M) {
 
     /* ------------------------------------------------------------------ telemetry */
 
+    /** Seconds alive, to milliseconds. Three decimals because runs differ by fractions of a second. */
+    fmt(ms) { return (ms / 1000).toFixed(3); },
+
+    /** The survival clock runs off wall time, independent of the decision loop, so it stays honest
+     *  even when the game's frame rate drops (a backgrounded tab renders at ~2 FPS). */
+    clock() {
+      if (!this.mars) return;
+      const mode = this.mars.mode();
+      if (mode === 'playing') {
+        if (this.runStartedAt == null) { this.runStartedAt = performance.now(); this.outcome = ''; }
+        this.survivedMs = performance.now() - this.runStartedAt;
+        if (this.survivedMs > this.bestMs) this.bestMs = this.survivedMs;
+        M.redraw();
+      } else if (this.runStartedAt != null) {
+        this.survivedMs = performance.now() - this.runStartedAt;
+        if (this.survivedMs > this.bestMs) this.bestMs = this.survivedMs;
+        this.runStartedAt = null;
+        this.outcome = 'seconds — ship lost';
+        M.redraw();
+      }
+    },
+
     rttStat(which) {
       const n = this.rtts.length;
       if (!n) return 0;
@@ -301,6 +336,8 @@ export function Agent(M) {
           // nothing updates until startGame(). Leaving it there means the sim does not begin -- and the
           // ship does not start taking fire -- until the model is hot and has already chosen a target.
           this.booted = true;
+          // 10 Hz is enough to read a millisecond counter and cheap next to the model call.
+          setInterval(() => this.clock(), 100);
           this.refresh();
           M.redraw();
         }
