@@ -15,8 +15,20 @@
  * controller does better; the model answers the judgement calls.
  */
 
-const TICK = 1200;         // ms between decisions. ~3 questions at ~280 ms each, plus slack.
+const TICK = 400;          // ms floor between decisions; in practice the model's RTT sets the pace
 const HISTORY = 120;       // samples kept for the sparklines
+
+/* Not every question deserves the same cadence.
+ *
+ * Every question costs a full prefill of its own tail, every tick (see the README: -ub 2048 buys
+ * throughput at the price of partial prefix reuse). So asking four questions at 60 Hz of game time is
+ * paying for judgements that do not change that fast. `target` does change fast -- it is the aiming
+ * loop, and it goes every tick. Posture, threat and whether to wake the scorpion are slower calls, and
+ * holding the previous answer for a few hundred milliseconds costs nothing: the autopilot jinks
+ * continuously between decisions regardless.
+ *
+ * This is also what makes questions-per-inference worth plotting rather than a constant. */
+const CADENCE = 3;         // ask the slow questions every Nth decision
 
 /* One line per *candidate*, the way the openjev branch plotted one line per option.
  *
@@ -311,7 +323,7 @@ export function Agent(M) {
      *  situation goes over structured rather than as prose. The *candidates* stay prose: a candidate
      *  description is the argument for attacking that thing, and that is where the judgement lives.
      */
-    situation() {
+    situation(full = true) {
       const s = this.mars.state();
       const t = this.mars.targets();
       const near = (k, n) => t.filter(x => x.kind === k).slice(0, n);
@@ -375,6 +387,10 @@ export function Agent(M) {
 
       const questions = {
         target: { type: 'choice', instructions: 'What should the gunship attack right now?', criteria },
+      };
+      if (!full) return { state, questions, candidates };
+
+      Object.assign(questions, {
         posture: {
           type: 'choice',
           instructions: 'Keep attacking, or break off and climb away to survive?',
@@ -384,7 +400,7 @@ export function Agent(M) {
           },
         },
         threat: { type: 'score', instructions: 'How much danger is the gunship in right now?', criteria: THREAT_RUBRIC },
-      };
+      });
       // Only asked while there is something to answer. This is why questions-per-inference moves: it is
       // 3 for most of the raid and 4 while the scorpion is still buried.
       if (s.bossState === 'dormant') {
@@ -455,7 +471,9 @@ export function Agent(M) {
       this.game = this.mars.state();
       if (this.game.mode !== 'playing') { this.refresh(); M.redraw(); return performance.now() - t0; }
 
-      const { state, questions, candidates } = this.situation();
+      // Slow questions ride along on every CADENCE-th decision; the rest are target-only.
+      const full = this.decisions % CADENCE === 0;
+      const { state, questions, candidates } = this.situation(full);
       this.premise = JSON.stringify(state, null, 1);
 
       let r;
@@ -468,10 +486,10 @@ export function Agent(M) {
       const probs = a.target.probabilities || {};
       this.options = candidates.map(c => ({ ...c, p: probs[c.uid] ?? 0 }));
       this.chosen = a.target.choice;
-      this.posture = a.posture.choice;
-      this.postureP = a.posture.confidence;
-      this.threat = a.threat.score;
-      this.wake = a.wake ? { choice: a.wake.choice, p: a.wake.confidence } : null;
+      // On a target-only tick the slow answers are simply the previous ones, held rather than re-asked.
+      if (a.posture) { this.posture = a.posture.choice; this.postureP = a.posture.confidence; }
+      if (a.threat) this.threat = a.threat.score;
+      if (full) this.wake = a.wake ? { choice: a.wake.choice, p: a.wake.confidence } : null;
 
       // Latency and question accounting. `questions` is what the adapter actually answered inside this
       // one call, which is the number that makes RTT comparable between ticks.

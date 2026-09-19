@@ -12,8 +12,8 @@ question.
 | model | AlexWortega/openjev, Qwen3.5-4B NLI cross-encoder | qwen3.8-27b-nvfp4-mtp-q8attn (GGUF, NVFP4) |
 | engine | Transformers, weights in our own process | llama.cpp `llama-server`, already resident |
 | asks | one premise + N hypotheses → P(entailment) each | one state + N **named questions** → typed answers |
-| per decision | 1 batched forward pass | 1 prefill per question (3–4 here) |
-| decision RTT | ~35 ms | ~1.5 s |
+| per decision | 1 batched forward pass | 1 prefill per question |
+| decision RTT | ~35 ms | **p50 427 ms**, p95 1026 ms |
 
 The interesting difference is not the size. openjev could only score *"how true is this sentence"*, so
 every decision had to be disguised as a hypothesis — and a sentence can be perfectly true while being a
@@ -30,12 +30,17 @@ uv venv --python 3.12 .venv                                  # pydantic + numpy 
 uv pip install --python .venv/bin/python pydantic numpy      # the weights live in llama-server
 bun run game                                                 # fetch + patch vibe-arcade's mars.html
 
-~/inference.mjs qwen3.8-27b-nvfp4-mtp-q8attn                 # terminal 1: the model (any llama-server)
+~/inference.mjs qwen3.8-27b-simplejev                        # terminal 1: the model (any llama-server)
 bun run model                                                # terminal 2: the simple-jev adapter
 bun run dev                                                  # terminal 3: http://127.0.0.1:8734/
 ```
 
 Then press **run agent**. Game on the left; ranked targets, judgement and latency on the right.
+
+The `qwen3.8-27b-simplejev` profile is tuned for classifier scoring rather than chat — one slot, wide
+batches, no vision tower, no speculative decoding. It is copied into `scripts/inference-preset.yaml`
+(with the plain `llama-server` command line, if you do not use that launcher), and the numbers behind
+each flag are in [Latency](#latency-1920-ms---427-ms) below.
 
 ## Architecture
 
@@ -48,7 +53,7 @@ browser  web/index.html + web/app.js      m.js page; the agent loop lives here, 
 bun      server/static.js                 static files + proxy. No game logic.
    |
    v  POST /v1/classifier
-python   server/jev_server.py             ~290 lines. Holds no weights. Knows nothing about Mars.
+python   server/jev_server.py             ~360 lines. Holds no weights. Knows nothing about Mars.
    |     vendor/simple-jev/common/        the v1 contract, imported from the submodule, never copied
    v  POST /apply-template, /tokenize, /completion
 llama.cpp  llama-server :1234             qwen3.8-27b-nvfp4-mtp-q8attn
@@ -56,7 +61,7 @@ llama.cpp  llama-server :1234             qwen3.8-27b-nvfp4-mtp-q8attn
 
 **The code flies; the model judges.** MARS RAID is a continuous 3D flight sim, and geometry is exactly
 what a hand-written controller does better. Aiming, throttle and altitude are code. The model answers
-*what should we be shooting at*, *should we still be here*, and *how bad is this*, once every ~1.5 s.
+*what should we be shooting at* every tick, and *should we still be here* / *how bad is this* every third.
 
 ## Why llama.cpp and not upstream's `hf-server`
 
@@ -84,6 +89,30 @@ The adapter takes `--llama <url>` and talks to any llama-server. To use upstream
 `hf_server.py` with an HF-format checkpoint and point `MODEL_URL` at it; the request/response shape is
 the same, because it is the same `common/`.
 
+### One thing `hf-server` does that llama-server cannot
+
+Worth being precise about, because it is the whole latency story. `hf_server.py` holds the model
+in-process, so it can do this (`HFBackend._score`):
+
+```python
+sequences = [b.token_ids for b in compiled.branches]
+prefix = common_prefix(sequences)[: min(map(len, sequences)) - 1]   # prefill ONCE
+...                                                                  # then batch every branch suffix
+```
+
+It computes the token prefix shared by all of a request's questions, prefills it a single time into a
+KV cache, and then runs **all the question suffixes as one padded batch** (`max_batch_size=32`). One
+forward pass, N answers.
+
+llama-server has no equivalent over HTTP. There is no way to hand it N prompts sharing a prefix and get
+N next-token logit vectors back from one batched pass. Each question is its own `/completion` request,
+its own prefill, and its own ~100 ms request floor. Serving the questions concurrently across slots
+(`-np 4`) does not recover it either — measured below, it is *slower*, because each slot then
+re-evaluates the shared prefix separately.
+
+So: llama.cpp gets us this model at all, and after tuning it gets a decision in ~430 ms. But the
+one-forward-pass-per-request shape is a real ceiling that the Transformers path does not have.
+
 ## Getting label logits out of llama.cpp
 
 v1 needs the raw next-token logits for a few permitted labels, at a deliberately unfinished assistant
@@ -105,11 +134,11 @@ either way — it is a sort, not a forward pass).
 All 50 choice labels and all 10 digit labels are single-token-stable at the rendered boundary for this
 tokenizer, checked per v1 section 9 and cached on the text tail the label follows.
 
-## Latency: why a decision costs ~1.5 s
+## Latency: 1920 ms -> 427 ms
 
 openjev answered in ~35 ms because it was **one batched forward pass** over all hypotheses by a 4B
 encoder, with no generation. simple-jev v1 is structurally different, and the difference is not model
-size. Profiled, with the label-boundary cache warm:
+size. Profiled at the start, with the label-boundary cache warm:
 
 ```
 question     render  tokenize  complete  prompt_n
@@ -128,17 +157,57 @@ Template rendering and tokenization are free. Decode is free (`predicted_ms = 0.
                      shared, cached                                       differs per question
 ```
 
-The selected question sits *after* the context, and v1 renders its options **twice** (section 5). With
-one llama-server slot, cycling through the questions evicts each previous tail, so every question pays
-full prefill for its own tail, every tick. The state changes each tick anyway, which invalidates
-everything after it regardless. So the cost is `eval(state) + Σ eval(question tails)`, plus a ~100 ms
-per-request floor.
+The selected question sits *after* the context, and v1 renders its options **twice** (section 5). The
+state changes every tick, which invalidates everything after it, so the cost is
+`eval(state) + Σ eval(question tails)` plus a ~100 ms per-request floor.
 
-That makes the tails the only real lever, and they responded well — trimming candidate counts (3+3+2 → 2+2+2)
-and shortening option/rubric wording took a decision from **1920 ms to ~1470 ms** with no loss of quality.
-Untested levers, in rough order of expected value: `-np 4` so the questions batch in parallel slots
-instead of serialising; a larger `-ub` (currently 512) so a ~650-token tail is not split into micro-batches;
-and asking `threat`/`wake` on a slower cadence than `target`.
+Four things were tried. Three helped:
+
+| change | effect |
+|---|---|
+| trim the ballot (3+3+2 → 2+2+2 candidates) and shorten option/rubric wording | 1920 → 1470 ms |
+| `-ub 2048`, f16 KV, drop the vision tower (`qwen3.8-27b-simplejev` preset) | ~1100 → 647 ms per 4 questions |
+| cadence: `target` every tick, the slow questions every 3rd | **p50 427 ms**, p95 1026 ms |
+| `-np 4` + concurrent requests | **no gain, usually worse** — reverted |
+
+Two of those deserve the detail:
+
+**`-np 4` is a trap.** The obvious move — one slot per question, score them concurrently — is slower.
+With one slot the questions chain: the first pays for the changed state, the rest reuse it and pay only
+their own tail (`4 / 393 / 469 / 387` tokens). With four slots no slot holds the previous question's
+context, so every question re-evaluates its whole prompt (`807 / 547 / 623 / 541`). Issuing them
+concurrently then measured 704–1009 ms against 647–760 ms serial. The adapter stays serial and the
+preset stays `-np 1`.
+
+**`-ub 2048` disables partial prefix reuse, and is still worth it.** Verified directly with two prompts
+sharing a 720-token prefix:
+
+```
+                              -ub 512      -ub 1024     -ub 2048
+identical prompt                 4 tok         4 tok        4 tok
+shares prefix with previous    517 tok       810 tok      810 tok    <- reuse gone
+4-question decision             784 ms        758 ms       647 ms
+```
+
+Only a byte-identical prompt hits the cache at 2048. Wide-and-dumb still wins, because raw prefill
+throughput roughly triples (~1900 → ~3700 tok/s) and the question tails are large next to the shared
+prefix. `-ub 1024` is the worst of both.
+
+### Could it reach ~50 ms?
+
+Not with this model, and not through llama-server. The floor is additive:
+
+- **~45 ms** browser→bun→adapter HTTP overhead (measured, steady).
+- **~100 ms** llama-server per-request floor, paid even when the prompt is byte-identical and
+  `prompt_n = 4`.
+- **~220 ms** prefill for the `target` question alone: 807 tokens at ~3700 tok/s, and v1 renders the
+  candidate list twice, so this does not shrink much without gutting the ballot.
+
+That is ~365 ms for the cheapest useful decision, which is roughly what the target-only ticks measure
+(~400–430 ms). 50 ms is below the HTTP and request floors *before any compute*. Getting there needs all
+three of: a much smaller model, all questions in one batched forward pass (what `hf-server` does and
+llama-server cannot), and in-process inference with no HTTP per question. That is essentially the
+openjev architecture — which is exactly why it ran at 35 ms.
 
 ## `noul` does not survive contact with this model
 
@@ -188,21 +257,26 @@ reads 0.09 at full hull and 2.90 at 30%.
 
 ## Results
 
-One continuous run, agent driving from the menu:
+One continuous run, agent driving from the menu, on the tuned `qwen3.8-27b-simplejev` preset:
 
 | goal | result |
 |---|---|
-| destroy the colony | **11 → 0 buildings**, hull still 100 when the last one fell |
+| destroy the colony | **11 → 0 buildings**, hull still 93 as the last ones fell |
 | wake the scorpion | `wake` flipped to yes on its own once the colony was gone |
-| fight the boss | engaged claws-first by phase; hull 100 → 30 over the fight |
+| kill the scorpion | **dead** — worked through all three phases, claws → tail → head |
+| survive | ship lost to saucers *after* the boss died, at hull 51 with both objectives complete |
 | posture under fire | `break_off` at 0.97 with threat 2.90; `press` at 1.00 while untouched |
 
-Telemetry over that run: **51 decisions, 189 questions, mean RTT 1466 ms, p50 1498, p95 1532**,
-~44 ms of that HTTP/proxy overhead, 11–15 labels scored per decision.
+Telemetry over that run: **162 decisions, 289 questions, mean RTT 576 ms, p50 427 ms, p95 1026 ms**,
+~45 ms of that HTTP/proxy overhead.
 
-Questions per inference moves with the situation — **4** while the scorpion is buried (`wake` is on the
-ballot), **3** once it is awake. That is the shared-prefix design doing its job: the state is sent once
-and several independent judgements come back from it.
+For comparison, the openjev branch got the scorpion "down to 23% before the ship was lost". This one
+killed it.
+
+Questions per inference is **1** on most ticks and **3–4** on every third — `target` is the aiming loop
+and runs every tick, while posture, threat and whether to wake the scorpion are held between full ticks.
+The RTT sparkline shows it directly: a flat ~420 ms floor with a regular spike where the slow questions
+ride along.
 
 ### Honest placement
 

@@ -1,0 +1,52 @@
+# llama-server profile used by this demo, as measured in the README.
+#
+# This is a copy. The live one lives in ~/.config/inference/config.yaml under `models:` and is launched
+# with `~/inference.mjs qwen3.8-27b-simplejev`; it is duplicated here so the tuning is reviewable with
+# the code that depends on it. Nothing in the repo reads this file.
+#
+# If you are not using that launcher, the equivalent invocation is:
+#
+#   llama-server -m <model>.gguf -ngl 99 -c 32768 -np 1 -ctk f16 -ctv f16 \
+#     -b 8192 -ub 2048 --host 127.0.0.1 --port 1234 --jinja --kv-unified \
+#     -t 12 --flash-attn on --no-mmap
+#
+# --jinja is required: the adapter renders prompts through /apply-template.
+
+models:
+  # simple-jev classifier scoring (simplejev-mars demo).
+  # Tuned for a very different shape of work than the chat presets above: prompts are ~1.5k tokens,
+  # exactly one token is ever generated, and a decision issues one request per question. So the cost is
+  # all prefill, and the knobs that matter are batch width and slot count, not context length.
+  qwen3.8-27b-simplejev:
+    server_alias: qwen3.8-27b-nvfp4-mtp-q8attn
+    model: ~/.lmstudio/models/utautako/Qwen3.8-27B-NVFP4-MTP-Q8attn-GGUF/Qwen3.8-27B-NVFP4-MTP-Q8attn.gguf
+    # no mmproj: the classifier is text-only, so the vision tower is VRAM and load time for nothing
+    args:
+      # no --spec-type: speculative decoding buys nothing when n_predict is 1 (measured: 1090 vs 1100 ms)
+      - [-ngl, 99]
+      # ONE slot, deliberately. Measured: with -np 4 the questions round-robin into separate slots and
+      # each re-evaluates the whole shared prefix (807/547/623/541 tokens per tick) because no slot holds
+      # the previous question's context. On one slot they chain -- the first question pays for the changed
+      # state, the rest reuse it and pay only their own tail (4/393/469/387). Scoring concurrently across
+      # slots measured no faster in wall time and often slower, so the adapter stays serial.
+      # 32k is far more than the ~1.5k prompts need; the rest would be KV cache we never touch.
+      - [-c, 32768]
+      - [-np, 1]
+      # f16 KV: with a small context there is no reason to pay dequant on every attention
+      - [-ctk, f16]
+      - [-ctv, f16]
+      # Wide batches. Measured trade-off, and it is not the obvious one: -ub 2048 DISABLES llama.cpp's
+      # partial prefix reuse (only a byte-identical prompt hits the cache; any divergence re-evaluates
+      # the whole prompt), while -ub 512 keeps reuse. Wide-and-dumb still wins, because the question
+      # tails are large next to the shared prefix -- 4 questions cost 647ms at -ub 2048 with no reuse
+      # vs 784ms at -ub 512 with reuse. -ub 1024 is the worst of both: no reuse, 758ms.
+      - [-b, 8192]
+      - [-ub, 2048]
+      - [--host, 127.0.0.1]
+      - [--port, 1234]
+      - --jinja
+      - [--reasoning-effort, low]
+      - --kv-unified
+      - [-t, 12]
+      - [--flash-attn, "on"]
+      - --no-mmap
