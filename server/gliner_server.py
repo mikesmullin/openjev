@@ -120,12 +120,27 @@ def describe(state):
     else:               taking = "Nothing is hitting it"
 
     bits = [condition, taking]
-    bits.append(f"{saucers} alien saucers are in the air shooting at it" if saucers
-                else "the sky is clear of saucers")
+    # How the saucers are described has to track what they are actually doing, because it decides
+    # whether the classifier picks them. "in the air shooting at it" made them win on every tick that
+    # one existed; "a distraction" made them lose even while they were killing the ship. They are a
+    # distraction when they are missing and the reason to break off when they are not, so say which.
+    if not saucers:
+        bits.append("the sky is clear of saucers")
+    elif lost >= 8:
+        bits.append(f"{saucers} alien saucers are shooting the ship apart and have to be cleared first")
+    else:
+        bits.append(f"{saucers} alien saucers are buzzing around as a harmless distraction")
     bits.append(f"{buildings} colony buildings are still standing" if buildings
                 else "the colony is flattened")
     sc = s.get("scorpion") or {}
     status = sc.get("status", "")
+    # No mission sentence here, deliberately. "The mission is to flatten the colony and then kill the
+    # giant scorpion" is true on every tick, and adding it made `target` pick the colony even while
+    # saucers were shooting the ship apart -- the third time in this repo an always-true sentence has
+    # quietly decided an answer. Priority between kinds is enforced structurally instead: the page
+    # only puts saucers on the ballot once they are actually doing damage (see web/app.js). Structure
+    # for priority, wording for judgement.
+
     if "dormant" in status or "buried" in status:
         bits.append("the giant scorpion is still buried and asleep")
     elif sc.get("vulnerable_parts"):

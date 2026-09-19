@@ -388,15 +388,23 @@ export function Agent(M) {
       for (const b of near('boss', 2))
         add(b, 'boss', b.uid || `boss:${b.label}`,
             `Attack ${b.label}: the only part of the scorpion that can be hurt in this phase, down to ${Math.round(100 * b.hp / b.max)} percent.`);
-      /* A candidate description has to argue FOR its action. The first version of the saucer sentence
-         ended "...more saucers keep spawning, so clearing them is endless", which is true, is useful
-         context, and is an argument against picking it -- so saucers scored ~0.01 while the ship was
-         being shot down. That caveat belongs in the shared state, where it informs every question
-         equally. What belongs here is the reason to shoot this saucer now, escalating as the hull drops. */
-      for (const a of near('saucer', 2))
-        add(a, 'saucer', a.uid, bleeding
-          ? `Shoot down the alien saucer ${Math.round(a.dist)} metres away. The ship is at ${s.hull} percent hull and cannot finish the mission if it is destroyed first.`
-          : `Shoot down the alien saucer ${Math.round(a.dist)} metres away. It is firing on the ship.`);
+      /* Saucers are only on the ballot when they are actually hurting the ship.
+       *
+       * They are a distraction by design: they respawn forever, so clearing them is not a win
+       * condition, and the mission is the colony and then the scorpion. Offered unconditionally,
+       * GLiNER picked "alien saucer" on essentially every tick that any saucer existed -- the state
+       * text says they are "in the air shooting at it", which is the most urgent-sounding thing on
+       * the page, and a classifier matches salience rather than weighing objectives.
+       *
+       * This is the openjev lesson arriving from the opposite direction. There the saucer option
+       * argued against itself and scored ~0.01 while the ship was shot down; the fix was to make it
+       * compelling when danger was real. Here it is compelling always, and the fix is the same idea
+       * applied the other way: an option belongs on the ballot only when choosing it would be right.
+       * Below the damage threshold, shooting saucers is never right, so it is not offered.
+       */
+      if (bleeding) for (const a of near('saucer', 2))
+        add(a, 'saucer', a.uid,
+            `Shoot down the alien saucer ${Math.round(a.dist)} metres away. The ship is at ${s.hull} percent hull and cannot finish the mission if it is destroyed first.`);
       for (const b of near('building', 2))
         add(b, 'building', b.uid,
             `Destroy the colony building ${Math.round(b.dist)} metres away. Flattening the colony is the mission and ${s.buildings} still stand${s.buildings === 1 ? 's' : ''}.`);
