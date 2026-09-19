@@ -67,7 +67,18 @@ MODEL_ID = "convaiinnovations/laya"
 # It tracks whether the jinking is working right now, independent of accumulated damage. So the ship
 # breaks off when it is hurt AND being hit, and goes straight back to the mission the moment it shakes
 # them -- even at 15 percent hull, because 15 percent hull that nothing can hit is not an emergency.
-BREAK_OFF_THREAT = 2.0
+# Breaking off is a LAST resort, not the first answer to being shot at.
+#
+# Running does not shake the saucers -- they follow, so the evasion keeps failing, the reading stays
+# low, and the ship flees for the rest of the game. That is a self-sustaining loop and no threshold on
+# a single tick escapes it. The right first response to "the jinking is not working" is to turn and
+# kill the saucer, which the ballot already offers as soon as the ship is bleeding. So break_off now
+# needs the hull to be genuinely gone (threat ~critical), not merely low.
+# 2.35, not 3. `threat` is an expected level over a 4-level rubric, so it is an average and does not
+# reach the top: the highest reading observed in play is ~2.54. A threshold of 2.6 is unreachable and
+# turns break-off off entirely, which is the opposite failure. Observed: 2.10 at 45 percent hull under
+# fire, 2.42-2.44 at 12-25 percent under fire.
+BREAK_OFF_THREAT = 2.35
 BREAK_OFF_EVADING = 0.30
 
 

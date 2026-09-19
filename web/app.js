@@ -77,7 +77,8 @@ export function Agent(M) {
     mars: null, booted: false, error: '', modelInfo: '', modelName: '',
     running: false, arming: false, decisions: 0,
     premise: '', options: [], chosen: null, history: [], game: {},
-    posture: null, postureP: 0, threat: null, wake: null, evadingOk: null, breakOffUntil: 0,
+    posture: null, postureP: 0, threat: null, wake: null, evadingOk: null,
+    breakOffUntil: 0, reEngageUntil: 0, postureWhy: '',
     // Latency bookkeeping. rtt is measured in the browser around the fetch, so it is what the agent
     // actually waits for; serverMs is what the adapter spent talking to llama.cpp. The gap between them
     // is HTTP and proxy overhead, and it is worth being able to see it.
@@ -149,7 +150,7 @@ export function Agent(M) {
       <div class="row">
         <span class="val" x-text="postureP ? postureP.toFixed(2) : '—'"></span>
         <span class="bar"><i :style="'width:' + (postureP*100).toFixed(1) + '%;background:var(--amber)'"></i></span>
-        <span class="txt"><span x-text="posture || 'no posture yet'"></span><em>derived from threat &middot; not asked of the model</em></span>
+        <span class="txt"><span x-text="posture || 'no posture yet'"></span><em x-text="postureWhy ? 'derived &middot; ' + postureWhy : 'derived from threat &middot; not asked of the model'"></em></span>
       </div>
       <div class="row">
         <span class="val" x-text="threat == null ? '—' : threat.toFixed(2)"></span>
@@ -508,7 +509,7 @@ export function Agent(M) {
       this.options = candidates.map(c => ({ ...c, p: probs[c.uid] ?? 0 }));
       this.chosen = a.target ? a.target.choice : null;
       // On a target-only tick the slow answers are simply the previous ones, held rather than re-asked.
-      if (a.posture) { this.posture = a.posture.choice; this.postureP = a.posture.confidence; }
+      if (a.posture) { this.posture = a.posture.choice; this.postureP = a.posture.confidence; this.postureWhy = a.posture.why || ''; }
       if (a.threat) this.threat = a.threat.score;
       if (a.evading_ok) this.evadingOk = a.evading_ok.noul;
       if (full) this.wake = a.wake ? { choice: a.wake.choice, p: a.wake.confidence } : null;
@@ -545,9 +546,10 @@ export function Agent(M) {
        */
       const pick = candidates.find(c => c.uid === this.chosen) || candidates[candidates.length - 1];
       const now = performance.now();
-      if (this.posture === 'break_off' && now >= this.breakOffUntil) {
+      if (this.posture === 'break_off' && now >= this.breakOffUntil && now >= this.reEngageUntil) {
         this.mars.evade();                       // once per commitment, not once per tick
         this.breakOffUntil = now + BREAK_OFF_MS;
+        this.reEngageUntil = this.breakOffUntil + RE_ENGAGE_MS;
       }
       if (now < this.breakOffUntil) {
         // Mid-manoeuvre: leave the waypoint alone and let the ship actually get there.
