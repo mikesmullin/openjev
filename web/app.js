@@ -12,7 +12,7 @@ import { ACTIONS, FOLDERS, SPAM_SIGNALS, premiseFor, groupsFor, loadConfig, OP_C
    gives 25.2/s and 24 gives 27.9/s, because a request spends time in HTTP and JSON as well as in the
    model, so it takes more than one client per worker to keep a worker busy. Past ~32 the listen
    backlog starts refusing connections, so 16 sits comfortably inside the useful range. */
-const WORKERS = 16;
+const WORKERS = 24;
 
 const pct = (n, d) => (d ? Math.round((100 * n) / d) : 0);
 const fmtWhen = (iso) => iso

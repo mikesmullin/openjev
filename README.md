@@ -12,8 +12,8 @@ routing it collapses, and it does so *confidently*.
 |---|---|---|---|
 | model | Qwen3.5-4B NLI | GLiNER 2.5, 194M | Laya, 421M |
 | device | RTX 5090 | **CPU** | **GPU** (see below) |
-| throughput | 5.2 emails/s | 18.6 emails/s | 28.4 emails/s on GPU, **3.5 on CPU** |
-| per email | 180 ms | 109 ms | 55 ms on GPU |
+| throughput | 5.2 emails/s | 18.6 emails/s | 39.0 emails/s on GPU, **3.5 on CPU** |
+| per email | 180 ms | 109 ms | 59 ms on GPU |
 | filed to a folder | — | **40%** | 20% |
 | fell into `archive` | — | **31%** | 67% |
 | flagged likely spam | — | **62** (12%) | 216 (43%) |
@@ -30,18 +30,36 @@ recording. `laya.load()` places the model on CUDA whenever a GPU is visible; the
 of weights plus a ~1.5 GB CUDA context -- **25 GB of VRAM**, which filled the card while the README
 said "the GPU is never touched".
 
-Measured properly, `--device` now explicit:
+Measured properly, `--device` now explicit. Server capacity, load generator at 8 in flight:
 
-| device | workers | throughput | VRAM |
-|---|---|---|---|
-| cuda | 1 | **28.4 emails/s** | ~3.1 GB |
-| cuda | 8 | 27.4 emails/s | ~25 GB |
-| cpu | 8 | 3.5 emails/s | 0 |
+| device | workers | throughput | p50 | VRAM |
+|---|---|---|---|---|
+| cuda | 1 | 28.1 emails/s | 282 ms | 4.2 GB |
+| cuda | 2 | 46.7 emails/s | 194 ms | 7.3 GB |
+| cuda | **4** | **67.1 emails/s** | **103 ms** | 13.6 GB |
+| cpu | 8 | 3.5 emails/s | — | 0 |
 
-One GPU worker does everything eight were doing -- they were contending for the same device, so the
-extra seven bought nothing and cost 22 GB. The default is now `--device cuda --workers 1`, with
-`bun run model:cpu` for the CPU configuration. The process-not-threads result from `gliner-email` is
-a CPU result and does not transfer to a single GPU.
+**A second correction, on top of the first.** The initial fix concluded "one GPU worker does
+everything eight were doing" and dropped the default to 1. That was also wrong, and wrong for a
+boring reason: it compared a *page* run of 8 workers (27.4/s) against a *load-generator* run of 1
+worker (28.4/s). The page caps near 27/s on its own — 8 in-flight requests plus per-email DOM updates
+— so it hid the server's actual capacity in both cases. Measured with the same load generator
+throughout, GPU workers scale roughly linearly to 4: **2.4x throughput and 2.7x lower latency**.
+
+Two measurements are only comparable if the client is the same. Twice now on this branch a conclusion
+has come from comparing across harnesses.
+
+End to end through the page, with 4 GPU workers and the page raised to 24 in flight:
+
+| | before | after |
+|---|---|---|
+| throughput | 26.4 emails/s | **39.0 emails/s** |
+| avg latency | 106 ms | **59 ms** |
+| wall clock, 500 emails | ~19 s | **~13 s** |
+
+Classifications are identical across every configuration, which is the check that matters: worker
+count changes throughput and nothing else. The default is `--device cuda --workers 4` (~13.6 GB), with
+`bun run model:cpu` for the CPU path.
 
 ## The six-option cliff
 
@@ -136,14 +154,14 @@ uv pip install --python .venv/bin/python laya
 bun install
 
 cp config.yaml.example config.yaml     # your folders, each with a short `label`
-bun run model                          # 1 GPU worker, port 8750  (bun run model:cpu for CPU)
+bun run model                          # 4 GPU workers, port 8750  (bun run model:cpu for CPU)
 EMAIL_DB=/path/to/db bun run dev       # http://127.0.0.1:8735/
 ```
 
 `EMAIL_DB` points at a directory of entity YAML files with an `origin.raw` Gmail payload. **No corpus
 ships with this repo — it is someone's mail.** `config.yaml` is gitignored.
 
-`bun run model` runs a single GPU worker (~3.1 GB VRAM) under
+`bun run model` runs 4 GPU workers (~13.6 GB VRAM) under
 `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0`. `bun run model:cpu` forks 8 CPU
 workers of 4 threads sharing the port via `SO_REUSEPORT` — that scaling is a CPU result measured on
 [`gliner-email`](../../tree/gliner-email) and does not help on a single GPU, where one worker already
@@ -159,7 +177,7 @@ browser  web/index.html + web/app.js      the worker pool and the counters
 bun      server/static.js + emails.js     static files, /api/emails, /api/config, proxy
    |
    v  POST /classify
-python   server/laya_email_server.py      the staged tree. 1 GPU worker by default.
+python   server/laya_email_server.py      the staged tree. 4 GPU workers by default.
 ```
 
 The wire contract is `openjev-email`'s, unchanged, so the page is untouched: the staged answer is
