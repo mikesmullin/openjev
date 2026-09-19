@@ -17,8 +17,14 @@ Bun.serve({
       return new Response(await r.text(), { status: r.status, headers: { 'Content-Type': 'application/json' } });
     }
     if (url.pathname === '/api/health') {
-      try { return Response.json({ model: await (await fetch(`${MODEL}/health`)).json() }); }
-      catch (e) { return Response.json({ model: null, error: String(e) }, { status: 503 }); }
+      // Both backends speak /v1/classifier, but they report health differently: our llama.cpp adapter
+      // returns {ok, backend, model}, upstream's hf-server returns {status:"ready", model}. Normalise
+      // here so the page does not care which one is behind it -- swapping backends is a MODEL_URL change.
+      try {
+        const h = await (await fetch(`${MODEL}/health`)).json();
+        const ok = h.ok === true || h.status === 'ready';
+        return Response.json({ model: { ...h, ok, model: h.model ?? null, backend: h.backend ?? 'transformers' } });
+      } catch (e) { return Response.json({ model: null, error: String(e) }, { status: 503 }); }
     }
     const p = url.pathname === '/' ? '/index.html' : url.pathname;
     const f = Bun.file(ROOT + p.replace(/^\/+/, ''));

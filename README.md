@@ -35,6 +35,17 @@ bun run model                                                # terminal 2: the s
 bun run dev                                                  # terminal 3: http://127.0.0.1:8734/
 ```
 
+Or run it on upstream's Transformers server instead — same page, same `common/`, ~8x faster decisions
+on a small model (and much worse judgement; see [the frontier](#the-speedquality-frontier)):
+
+```bash
+uv pip install --python .venv/bin/python torch "transformers>=5.16.1,<6" accelerate fastapi uvicorn
+uv pip install --python .venv/bin/python flash-linear-attention   # NOT optional for Qwen3.5 -- see below
+
+HF_MODEL=Qwen/Qwen3.5-2B bun run model:hf                    # terminal 1: hf-server on :8760
+bun run dev:hf                                               # terminal 2: proxy points at it
+```
+
 Then press **run agent**. Game on the left; ranked targets, judgement and latency on the right.
 
 The `qwen3.8-27b-simplejev` profile is tuned for classifier scoring rather than chat — one slot, wide
@@ -193,21 +204,72 @@ Only a byte-identical prompt hits the cache at 2048. Wide-and-dumb still wins, b
 throughput roughly triples (~1900 → ~3700 tok/s) and the question tails are large next to the shared
 prefix. `-ub 1024` is the worst of both.
 
-### Could it reach ~50 ms?
+### Could it reach ~50 ms? Yes — but not with llama.cpp, and not with a 27B
 
-Not with this model, and not through llama-server. The floor is additive:
+Both backends speak `/v1/classifier`, because both are driven by the same `common/`. So the harness
+swaps between them with one environment variable, and the page shows which one it is talking to:
 
-- **~45 ms** browser→bun→adapter HTTP overhead (measured, steady).
-- **~100 ms** llama-server per-request floor, paid even when the prompt is byte-identical and
-  `prompt_n = 4`.
-- **~220 ms** prefill for the `target` question alone: 807 tokens at ~3700 tok/s, and v1 renders the
-  candidate list twice, so this does not shrink much without gutting the ballot.
+```bash
+bun run model    &&  bun run dev        # llama.cpp adapter  -> qwen3.8-27b-nvfp4-mtp-q8attn
+bun run model:hf &&  bun run dev:hf     # upstream hf-server -> HF_MODEL (default Qwen/Qwen3.5-2B)
+```
 
-That is ~365 ms for the cheapest useful decision, which is roughly what the target-only ticks measure
-(~400–430 ms). 50 ms is below the HTTP and request floors *before any compute*. Getting there needs all
-three of: a much smaller model, all questions in one batched forward pass (what `hf-server` does and
-llama-server cannot), and in-process inference with no HTTP per question. That is essentially the
-openjev architecture — which is exactly why it ran at 35 ms.
+Measured on the same 4-question payload, same machine (RTX 5090), classifier API direct:
+
+| backend | model | 4 questions | 1 question | in-game p50 |
+|---|---|---|---|---|
+| llama.cpp adapter | Qwen3.8-27B NVFP4 | ~1030 ms | ~430 ms | 427 ms |
+| `hf-server` | Qwen3.5-9B bf16 | 286 ms | 144 ms | 170 ms |
+| `hf-server` | Qwen3.5-2B bf16 | 83 ms | **46 ms** | **56 ms** |
+| `hf-server` | Qwen3.5-0.8B bf16 | 85 ms | 60 ms | — |
+
+Three things fall out of this:
+
+**The batched forward pass is the whole difference.** On `hf-server`, going from 1 question to 4 costs
++5 ms (48.7 → 53.9 ms on a minimal payload) — the shared prefix is prefilled once and the suffixes ride
+one batch. On llama.cpp each extra question is another request, another prefill, another ~100 ms floor.
+
+**Install the linear-attention kernels.** Qwen3.5 is a hybrid-attention model, and without
+`flash-linear-attention` Transformers silently falls back to a reference PyTorch implementation. It is
+not a rounding error — on Qwen3.5-0.8B, split by phase:
+
+```
+                                                    before FLA   after FLA
+compile()  jinja + tokenize + per-label checks          9.3 ms      8.6 ms
+score()    the batched forward pass                    58.7 ms     45.6 ms
+```
+
+That single `uv pip install flash-linear-attention` is what took the 2B from 60 ms to 46 ms per
+decision. (`causal-conv1d` is still missing — its prebuilt wheel fails to load against torch 2.11 with
+`undefined symbol: _ZN3c104cuda19CUDAErrorLogCaptureC1Ev`, so that fallback is still in effect. Building
+it from source should buy a little more.)
+
+**Prompt-side overhead is not the bottleneck.** Worth stating because it was the obvious suspect and it
+is wrong: `compile()` — jinja templating, full re-encode per branch, and the per-label single-token
+checks, none of it cached across requests — is under 9 ms. Pure HTTP is 0.6 ms. Extra candidates cost
+~1.2 ms each. The floor is the forward pass.
+
+### The speed/quality frontier
+
+The catch is that latency and judgement move in opposite directions, and the gap is not subtle:
+
+| model | decision | plays the game |
+|---|---|---|
+| Qwen3.8-27B | 427 ms | colony 11 → 0, scorpion woken at the right moment and killed |
+| Qwen3.5-9B | 170 ms | keeps the scorpion buried (correct), but fell for the hold-fire trap below |
+| Qwen3.5-2B | 56 ms | wakes the scorpion on tick one, 11 buildings still standing |
+
+Both smaller models failed in the same *kind* of way the openjev branch did — by picking whichever
+option reads best rather than whichever acts best. The 9B found a new one. `other:hold` ("Hold fire and
+attack nothing right now") used to be offered unconditionally, and on the 27B it almost never won. The
+9B took it at **0.98 every single tick** and flew an entire game with `shots: 0`. It is a safe,
+agreeable, always-defensible sentence, and a `choice` question rewards exactly that. It is now only on
+the ballot when there is genuinely nothing in range — after which the 9B started shooting.
+
+So if you need 50 ms *and* competent play, the honest path is not a smaller general model: it is
+fine-tuning a small one on these specific questions. That is what upstream's
+[`RFDT`](vendor/simple-jev/RFDT) folder is for, and why their own demo serves a
+`...-classifier` checkpoint rather than a stock instruct model.
 
 ## `noul` does not survive contact with this model
 

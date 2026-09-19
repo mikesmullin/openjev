@@ -81,7 +81,7 @@ export function Agent(M) {
     // Latency bookkeeping. rtt is measured in the browser around the fetch, so it is what the agent
     // actually waits for; serverMs is what the adapter spent talking to llama.cpp. The gap between them
     // is HTTP and proxy overhead, and it is worth being able to see it.
-    lastRtt: 0, lastServerMs: 0, lastQuestions: 0, lastLabels: 0, lastCached: 0,
+    lastRtt: 0, lastServerMs: null, lastQuestions: 0, lastLabels: 0, lastCached: null, lastInputTokens: 0,
     rtts: [], totalQuestions: 0, totalRtt: 0,
     gameSrc: './game/mars.html?v=' + Date.now(),
 
@@ -129,10 +129,10 @@ export function Agent(M) {
         <div class="stat"><b x-text="totalQuestions"></b><span>questions total</span></div>
       </div>
       <div class="legend" style="margin-top:9px">
-        <span x-text="'server ' + Math.round(lastServerMs) + ' ms'"></span>
-        <span x-text="'overhead ' + Math.max(0, Math.round(lastRtt - lastServerMs)) + ' ms'"></span>
+        <span x-text="lastServerMs == null ? 'server n/a' : 'server ' + Math.round(lastServerMs) + ' ms'"></span>
+        <span x-text="lastServerMs == null ? '' : 'overhead ' + Math.max(0, Math.round(lastRtt - lastServerMs)) + ' ms'"></span>
         <span x-text="lastLabels + ' labels scored'"></span>
-        <span x-text="'prefix cache ' + lastCached + ' tok'"></span>
+        <span x-text="lastCached == null ? lastInputTokens + ' input tok' : 'prefix cache ' + lastCached + ' tok'"></span>
       </div>
       <svg viewBox="-16 -6 500 94" preserveAspectRatio="none" style="height:92px">
         <line x1="0" y1="1"  x2="480" y2="1"  stroke="#43261f"></line>
@@ -354,9 +354,17 @@ export function Agent(M) {
       for (const b of near('building', 2))
         add(b, 'building', b.uid,
             `Destroy the colony building ${Math.round(b.dist)} metres away. Flattening the colony is the mission and ${s.buildings} still stand${s.buildings === 1 ? 's' : ''}.`);
-      // A choice needs at least two candidates, and "nothing here is worth shooting" is a real answer
-      // rather than a filler option -- the autopilot releases the trigger when it wins.
-      add({ hold: true }, 'other', 'other:hold', 'Hold fire and attack nothing right now.');
+      /* "Hold fire" is only on the ballot when there is nothing real to shoot at.
+       *
+       * It used to be offered unconditionally, as a legitimate answer rather than filler. On the 27B that
+       * was harmless -- it almost never won. On Qwen3.5-9B it won at 0.98 essentially every tick, and the
+       * agent flew a whole game with `shots: 0` and eleven buildings standing. Same trap as the saucer
+       * sentence, one level up: "attack nothing right now" is a safe, agreeable, always-defensible
+       * statement, and a choice question rewards the option that reads best, not the one that does best.
+       * Smaller models are far more susceptible to it. So it only appears when it is the honest answer --
+       * which also satisfies the 2-candidate minimum when the sky is empty. */
+      if (candidates.length < 2)
+        add({ hold: true }, 'other', 'other:hold', 'There is nothing in range worth attacking, so hold fire.');
 
       const state = {
         mission: 'Raid a Mars colony from a gunship. Destroy the colony, then kill the giant scorpion.',
@@ -385,9 +393,11 @@ export function Agent(M) {
       const criteria = {};
       for (const c of candidates) criteria[c.uid] = c.description;
 
-      const questions = {
-        target: { type: 'choice', instructions: 'What should the gunship attack right now?', criteria },
-      };
+      // A choice needs 2-50 candidates. With an empty sky and no colony left there may be fewer than
+      // that even after the hold option, and then there is simply no target question to ask.
+      const questions = {};
+      if (candidates.length >= 2)
+        questions.target = { type: 'choice', instructions: 'What should the gunship attack right now?', criteria };
       if (!full) return { state, questions, candidates };
 
       Object.assign(questions, {
@@ -436,7 +446,7 @@ export function Agent(M) {
       this.arming = true; M.redraw();
       try {
         const { state, questions } = this.situation();
-        await this.ask(state, questions);
+        if (Object.keys(questions).length) await this.ask(state, questions);
       } catch (e) { this.error = 'model warm-up failed: ' + e.message; }
       this.arming = false;
     },
@@ -475,6 +485,13 @@ export function Agent(M) {
       const full = this.decisions % CADENCE === 0;
       const { state, questions, candidates } = this.situation(full);
       this.premise = JSON.stringify(state, null, 1);
+      // v1 requires 1-256 questions. On a target-only tick with an empty sky there is nothing to ask,
+      // so do not spend a round trip proving it.
+      if (!Object.keys(questions).length) {
+        this.mars.release();
+        this.options = []; this.chosen = null; M.redraw();
+        return performance.now() - t0;
+      }
 
       let r;
       try {
@@ -483,9 +500,9 @@ export function Agent(M) {
       if (r.error) { this.error = r.error; this.running = false; return performance.now() - t0; }
 
       const a = r.answers;
-      const probs = a.target.probabilities || {};
+      const probs = (a.target && a.target.probabilities) || {};
       this.options = candidates.map(c => ({ ...c, p: probs[c.uid] ?? 0 }));
-      this.chosen = a.target.choice;
+      this.chosen = a.target ? a.target.choice : null;
       // On a target-only tick the slow answers are simply the previous ones, held rather than re-asked.
       if (a.posture) { this.posture = a.posture.choice; this.postureP = a.posture.confidence; }
       if (a.threat) this.threat = a.threat.score;
@@ -493,12 +510,16 @@ export function Agent(M) {
 
       // Latency and question accounting. `questions` is what the adapter actually answered inside this
       // one call, which is the number that makes RTT comparable between ticks.
-      const timing = r.timing || {};
+      // `timing` is our llama.cpp adapter's extension, not part of the v1 response. Upstream's
+      // hf-server returns model/answers/usage only, so treat it as absent rather than zero.
+      const timing = r.timing || null;
       this.lastRtt = r.__rtt;
-      this.lastServerMs = timing.total_ms || 0;
-      this.lastQuestions = timing.questions || Object.keys(questions).length;
-      this.lastLabels = timing.labels || 0;
-      this.lastCached = timing.cached_tokens || 0;
+      this.lastServerMs = timing ? timing.total_ms : null;
+      this.lastQuestions = (timing && timing.questions) || Object.keys(questions).length;
+      this.lastLabels = timing ? timing.labels : Object.values(questions)
+        .reduce((n, q) => n + (q.type === 'noul' ? 9 : Object.keys(q.criteria).length), 0);
+      this.lastCached = timing ? timing.cached_tokens : null;
+      this.lastInputTokens = (r.usage && r.usage.input_tokens) || 0;
       this.rtts.push(r.__rtt);
       if (this.rtts.length > HISTORY * 2) this.rtts = this.rtts.slice(-HISTORY);
       this.totalRtt += r.__rtt;
@@ -507,16 +528,16 @@ export function Agent(M) {
 
       /* Act. posture is a veto over target: the model can decide the fight is lost before it decides
          what to shoot, and breaking off has to win when it does. */
-      const pick = candidates.find(c => c.uid === this.chosen) || candidates[candidates.length - 1];
+      const pick = candidates.find(c => c.uid === this.chosen);
       if (this.posture === 'break_off') this.mars.evade();
       else if (this.wake && this.wake.choice === 'yes') this.mars.wakeBoss();
-      else if (pick.target.hold) this.mars.release();
+      else if (!pick || pick.target.hold) this.mars.release();
       else this.mars.aim(pick.target);
 
       // One sample per candidate per tick, keyed by its identity hash, plus what was actually chosen.
       const row = {};
       for (const o of this.options) row[o.sid] = { p: o.p, color: o.color };
-      this.history.push({ probs: row, pickColor: pick.color });
+      this.history.push({ probs: row, pickColor: pick ? pick.color : '#5c3a30' });
       if (this.history.length > HISTORY * 2) this.history = this.history.slice(-HISTORY);
 
       this.game = this.mars.state();

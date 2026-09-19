@@ -7,6 +7,8 @@
   "scripts": {
     "game": "bash scripts/fetch-game.sh",
     "model": "./.venv/bin/python server/jev_server.py --llama http://127.0.0.1:1234 --port 8750",
+    "model:hf": "./.venv/bin/python vendor/simple-jev/hf-server/hf_server.py --model ${HF_MODEL:-Qwen/Qwen3.5-2B} --device cuda --dtype bfloat16 --max-model-len 8192 --max-batch-size 8 --max-batch-tokens 16384 --port 8760",
+    "dev:hf": "MODEL_URL=http://127.0.0.1:8760 bun server/static.js",
     "dev": "bun server/static.js",
     "start": "bun server/static.js"
   }
