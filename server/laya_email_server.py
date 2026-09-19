@@ -89,13 +89,16 @@ def load_taxonomy():
 
 
 class Triage:
-    def __init__(self, model_id, threads):
+    def __init__(self, model_id, threads, device):
         import torch
         torch.set_num_threads(threads)
         import laya
         t0 = time.perf_counter()
-        self.agent = laya.load(model_id)
-        self.model_id, self.threads = model_id, threads
+        # laya.load() defaults to CUDA when a GPU is visible. Say which, always: an earlier version of
+        # this file set torch threads and assumed that meant CPU, and eight workers quietly took 25 GB
+        # of VRAM while the README claimed they were on the CPU.
+        self.agent = laya.load(model_id, device=device)
+        self.model_id, self.threads, self.device = model_id, threads, device
         self.ops, self.folders = load_taxonomy()
         self.label = dict(self.ops) | dict(self.folders)
         # The page's flat action list: operations first, then folders, from the same config.
@@ -108,7 +111,8 @@ class Triage:
         if extra:
             self.groups["life"] = (self.groups["life"][0] + extra, self.groups["life"][1])
         print(f"taxonomy: {len(self.ops)} operations, {len(self.folders)} folders", flush=True)
-        print(f"loaded {model_id} on CPU ({threads} threads) in {time.perf_counter()-t0:.1f}s", flush=True)
+        print(f"loaded {model_id} on {device} ({threads} threads) in {time.perf_counter()-t0:.1f}s",
+              flush=True)
         self.lock = __import__("threading").Lock()
 
     def _choice(self, text, instructions, criteria):
@@ -195,7 +199,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             return self._send({"ok": True, "backend": "laya-cpu-staged",
-                               "model": self.svc.model_id, "threads": self.svc.threads, "device": "cpu"})
+                               "model": self.svc.model_id, "threads": self.svc.threads,
+                               "device": self.svc.device})
         self._send({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -209,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(args, i):
-    Handler.svc = Triage(args.model, args.threads)
+    Handler.svc = Triage(args.model, args.threads, args.device)
     Handler.svc.warm()
     print(f"worker {i} ready on :{args.port}", flush=True)
     ReusePortServer(("127.0.0.1", args.port), Handler).serve_forever()
@@ -219,8 +224,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL_ID)
     ap.add_argument("--port", type=int, default=8750)
-    ap.add_argument("--threads", type=int, default=4)
-    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--threads", type=int, default=8)
+    # One worker on cuda. Each holds ~1.7 GB of weights plus a ~1.5 GB CUDA context, so eight of them
+    # is 25 GB of VRAM -- which is what happened, and it filled the card.
+    ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = ap.parse_args()
     kids = []
     for i in range(1, args.workers):

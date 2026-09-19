@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Laya (421M ModernBERT-large decision model, CPU) triaging a real inbox in stages",
+  "description": "Laya (421M ModernBERT-large decision model) triaging a real inbox in stages",
   "scripts": {
-    "model": "systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 ./.venv/bin/python server/laya_email_server.py --port 8750 --workers 8 --threads 4",
+    "model": "systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 ./.venv/bin/python server/laya_email_server.py --port 8750 --device cuda --workers 1 --threads 8",
     "dev": "bun server/static.js",
-    "start": "bun server/static.js"
+    "start": "bun server/static.js",
+    "model:cpu": "systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 ./.venv/bin/python server/laya_email_server.py --port 8750 --device cpu --workers 8 --threads 4"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
