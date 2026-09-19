@@ -77,7 +77,7 @@ export function Agent(M) {
     mars: null, booted: false, error: '', modelInfo: '', modelName: '',
     running: false, arming: false, decisions: 0,
     premise: '', options: [], chosen: null, history: [], game: {},
-    posture: null, postureP: 0, threat: null, wake: null,
+    posture: null, postureP: 0, threat: null, wake: null, evadingOk: null, breakOffUntil: 0,
     // Latency bookkeeping. rtt is measured in the browser around the fetch, so it is what the agent
     // actually waits for; serverMs is what the adapter spent talking to llama.cpp. The gap between them
     // is HTTP and proxy overhead, and it is worth being able to see it.
@@ -155,6 +155,11 @@ export function Agent(M) {
         <span class="val" x-text="threat == null ? '—' : threat.toFixed(2)"></span>
         <span class="bar"><i :style="'width:' + (threat == null ? 0 : threat/3*100).toFixed(1) + '%;background:var(--red)'"></i></span>
         <span class="txt"><span x-text="threatLabel()"></span><em>score &middot; 0&ndash;3 danger rubric</em></span>
+      </div>
+      <div class="row">
+        <span class="val" x-text="evadingOk == null ? '—' : evadingOk.toFixed(2)"></span>
+        <span class="bar"><i :style="'width:' + ((evadingOk||0)*100).toFixed(1) + '%;background:var(--green)'"></i></span>
+        <span class="txt"><span x-text="evadingOk == null ? 'no reading yet' : (evadingOk < 0.3 ? 'the jinking is NOT working' : 'the jinking is working')"></span><em>noul &middot; is it avoiding the incoming fire</em></span>
       </div>
       <template x-if="wake">
         <div class="row">
@@ -405,6 +410,10 @@ export function Agent(M) {
            score is excellent though (0.05 healthy, 2.07 worn down, 2.30 nearly dead), so the server
            thresholds that instead and marks the answer as derived. */
         threat: { type: 'score', instructions: 'How much danger is the gunship in right now?', criteria: THREAT_RUBRIC },
+        /* The reading that decides whether to disengage. `threat` says how hurt the ship is and never
+           recovers; this says whether the jinking is working right now, and it moves. See the
+           constants in server/laya_server.py. */
+        evading_ok: { type: 'noul', instructions: 'Is the gunship successfully avoiding the incoming fire?' },
       });
       // Only asked while there is something to answer. This is why questions-per-inference moves: it is
       // 3 for most of the raid and 4 while the scorpion is still buried.
@@ -501,6 +510,7 @@ export function Agent(M) {
       // On a target-only tick the slow answers are simply the previous ones, held rather than re-asked.
       if (a.posture) { this.posture = a.posture.choice; this.postureP = a.posture.confidence; }
       if (a.threat) this.threat = a.threat.score;
+      if (a.evading_ok) this.evadingOk = a.evading_ok.noul;
       if (full) this.wake = a.wake ? { choice: a.wake.choice, p: a.wake.confidence } : null;
 
       // Latency and question accounting. `questions` is what the adapter actually answered inside this
@@ -521,11 +531,27 @@ export function Agent(M) {
       this.totalQuestions += this.lastQuestions;
       this.decisions++;
 
-      /* Act. posture is a veto over target: the model can decide the fight is lost before it decides
-         what to shoot, and breaking off has to win when it does. */
-      const pick = candidates.find(c => c.uid === this.chosen);
-      if (this.posture === 'break_off') this.mars.evade();
-      else if (this.wake && this.wake.choice === 'yes') this.mars.wakeBoss();
+      /* Act, and let a manoeuvre finish before issuing another one.
+       *
+       * evade() sets a waypoint 600 m away and 120 m up, relative to where the ship is *now*. Calling
+       * it again next tick recomputes it from the new position, so at 13 ms a decision the ship was
+       * re-planning its escape ~70 times before travelling any of it and never actually broke contact.
+       * aim() is the opposite: the autopilot expects to be told its target every tick and reads
+       * target.live() each frame, so re-issuing it is normal (proved the hard way on gliner-mars).
+       *
+       * So: aim every tick, but commit to a break-off for BREAK_OFF_MS and issue evade() exactly once
+       * at the start of it. The commitment also stops the two orders alternating at decision rate,
+       * which is what made the evasive flying look like a twitch rather than a manoeuvre.
+       */
+      const pick = candidates.find(c => c.uid === this.chosen) || candidates[candidates.length - 1];
+      const now = performance.now();
+      if (this.posture === 'break_off' && now >= this.breakOffUntil) {
+        this.mars.evade();                       // once per commitment, not once per tick
+        this.breakOffUntil = now + BREAK_OFF_MS;
+      }
+      if (now < this.breakOffUntil) {
+        // Mid-manoeuvre: leave the waypoint alone and let the ship actually get there.
+      } else if (this.wake && this.wake.choice === 'yes') this.mars.wakeBoss();
       else if (!pick || pick.target.hold) this.mars.release();
       else this.mars.aim(pick.target);
 

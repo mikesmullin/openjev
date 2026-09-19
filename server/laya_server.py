@@ -48,8 +48,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL_ID = "convaiinnovations/laya"
 
-# Above this, break off. Laya's threat is a 0-3 expected level over the rubric in web/app.js.
-BREAK_OFF_AT = 2.5
+# Disengage only when BOTH readings say so: badly hurt AND not currently shaking the incoming fire.
+#
+# `threat` alone latches. It measures how hurt the ship is, not whether it is in danger now -- at 45
+# percent hull it reads 2.08 whether the ship is being shot (2.09) or completely unmolested (2.08).
+# Hull never recovers, so a threshold on threat alone means that once the ship has taken ~50 damage it
+# flees for the rest of the game, which is exactly the behaviour this replaced.
+#
+# `evading_ok` is the reading that moves. Measured across the same states:
+#
+#                          threat   evading_ok
+#   fresh, nothing firing    0.19         0.88
+#   hurt, not being hit      2.08         0.90
+#   hurt, being hit          2.09         0.06
+#   dying, not being hit     2.53         0.92
+#   dying, hit hard          2.45         0.07
+#
+# It tracks whether the jinking is working right now, independent of accumulated damage. So the ship
+# breaks off when it is hurt AND being hit, and goes straight back to the mission the moment it shakes
+# them -- even at 15 percent hull, because 15 percent hull that nothing can hit is not an emergency.
+BREAK_OFF_THREAT = 2.0
+BREAK_OFF_EVADING = 0.30
 
 
 def describe(state):
@@ -119,13 +138,17 @@ class Decider:
         ms = (time.perf_counter() - t0) * 1000
         answers = dict(out.get("answers") or {})
 
-        # posture is a threshold on the model's own threat reading, not a question -- see the docstring.
-        threat = answers.get("threat", {}).get("score")
+        # posture is derived from two model readings, not asked as a question -- see the constants.
+        threat = (answers.get("threat") or {}).get("score")
+        evading = (answers.get("evading_ok") or {}).get("noul")
         if threat is not None:
+            losing = evading is not None and evading < BREAK_OFF_EVADING
             answers["posture"] = {
                 "type": "derived",
-                "choice": "break_off" if threat >= BREAK_OFF_AT else "press",
+                "choice": "break_off" if (threat >= BREAK_OFF_THREAT and losing) else "press",
                 "confidence": answers["threat"].get("confidence", 1.0),
+                "why": (f"threat {threat:.2f}" + (f", evasion failing ({evading:.2f})" if losing
+                        else f", evasion holding ({evading:.2f})" if evading is not None else "")),
             }
         return {
             "model": self.model_id,
