@@ -6,7 +6,13 @@
  */
 import { ACTIONS, FOLDERS, SPAM_SIGNALS, premiseFor, groupsFor, loadConfig, OP_COLORS, colorForAction } from './questions.js';
 
-const WORKERS = 3;        // in-flight requests; the GPU serialises, so this only hides round-trip time
+/* In-flight requests. On the openjev branch this only hid round-trip time, because one GPU serialised
+   everything behind it. Here the server is 8 independent CPU worker processes sharing a port, so this
+   is what actually keeps them fed. Measured against 8 server workers: 8 in flight gives 14.8/s, 16
+   gives 25.2/s and 24 gives 27.9/s, because a request spends time in HTTP and JSON as well as in the
+   model, so it takes more than one client per worker to keep a worker busy. Past ~32 the listen
+   backlog starts refusing connections, so 16 sits comfortably inside the useful range. */
+const WORKERS = 16;
 
 const pct = (n, d) => (d ? Math.round((100 * n) / d) : 0);
 const fmtWhen = (iso) => iso

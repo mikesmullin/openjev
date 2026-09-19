@@ -1,7 +1,7 @@
 # gliner-email
 
-[GLiNER 2.5](https://github.com/fastino-ai/GLiNER2) triaging a real inbox — 500 emails, **6.6/s, on the
-CPU**, with the GPU never touched.
+[GLiNER 2.5](https://github.com/fastino-ai/GLiNER2) triaging a real inbox — 500 emails in 27 seconds,
+**18.6/s on the CPU**, with the GPU never touched.
 
 The [`openjev-email`](../../tree/openjev-email) branch did this task with a Qwen3.5-4B NLI
 cross-encoder: each email became 16 hypothesis sentences and the argmax entailment was the answer,
@@ -14,7 +14,7 @@ taxonomy, with a 194M DeBERTa-v3 classification encoder instead — and it is fa
 | model | Qwen3.5-4B NLI cross-encoder | GLiNER 2.5, 194M DeBERTa-v3 |
 | device | RTX 5090 | **CPU**, 12 threads |
 | per email | 180 ms | **109 ms** |
-| throughput | 5.2 emails/s (3 workers) | **6.6 emails/s** |
+| throughput | 5.2 emails/s (3 workers) | **18.6 emails/s** (8 workers) |
 | shape | premise re-encoded once **per hypothesis** | text encoded **once**, scored against a label set |
 | tokens out | 0 | 0 |
 
@@ -27,8 +27,8 @@ all in one forward pass per email:
 
 | | |
 |---|---|
-| throughput | **6.6 emails/s**, 0 errors |
-| per email | 109 ms avg |
+| throughput | **18.6 emails/s**, 0 errors — 500 emails in 27 s |
+| per email | 268 ms avg, but 8 run at once |
 | avg confidence | 60% |
 | tokens out | 0 — nothing to parse, no invalid JSON possible |
 
@@ -64,6 +64,65 @@ online-retailer content promotion            -> delete               spam   1%
 
 Card charges land in `Expenses`, promotions in `delete`, community and subscription mail in
 `Newsletters`, and an automated calendar ping in `archive`. Those are the calls a human would make.
+
+## Scale with processes, not threads
+
+The first version copied `-t 12` from the machine's llama-server config and ran one process behind a
+lock. On a 32-core Threadripper with 64 hardware threads that leaves most of the box idle, and the
+obvious fix — raise the thread count — barely helps. Measured in-process, one classify per email over
+21 labels:
+
+| torch threads | throughput |
+|---|---|
+| 4 | 6.0 emails/s |
+| 8 | 10.0 emails/s |
+| 12 | 11.9 emails/s |
+| 16 | 12.4 emails/s |
+| 24 | 14.4 emails/s |
+| 32 | 14.9 emails/s |
+
+2.7x the cores buys 1.25x the work. A 194M encoder on a 60-token email is simply too small a matmul to
+keep 32 threads busy; past about 8 they spend their time synchronising. Running independent copies
+instead:
+
+| configuration | threads used | throughput |
+|---|---|---|
+| 1 process x 8 threads | 8 | 10.9 emails/s |
+| 2 x 8 | 16 | 17.0 emails/s |
+| 4 x 8 | 32 | 30.8 emails/s |
+| **8 x 4** | **32** | **36.1 emails/s** |
+| 16 x 4 | 64 | 39.4 emails/s |
+
+`8 x 4` and `1 x 32` use the same 32 threads and differ by **2.4x**. 16 workers squeeze out a little
+more and take the whole machine; 8 is the default here because it leaves half the box for everything
+else.
+
+Each worker is a separate process with its own copy of the weights (~1 GB resident, ~8 GB for all
+eight), and they all bind port 8750 with `SO_REUSEPORT` so the kernel deals connections out and the
+client still sees one endpoint.
+
+### Client concurrency has to match
+
+Server workers only help if something keeps them fed. Against the 8-worker server over HTTP:
+
+| in-flight requests | throughput |
+|---|---|
+| 8 | 14.8 emails/s |
+| 16 | 25.2 emails/s |
+| 24 | 28.4 emails/s |
+| 32 | connection refusals |
+
+One client per worker is not enough — a request spends time in HTTP and JSON as well as in the model,
+so a worker idles between them. The page runs 16 in flight. The refusals at 32 were the listen backlog,
+not saturation: `ThreadingHTTPServer` defaults to `request_queue_size = 5`, which is now 64, so
+overload queues instead of failing.
+
+Two things worth noting. The bun proxy is not in the way — measured through it, 27.2 emails/s against
+25.2 direct, which is noise. And the end-to-end page run lands at 18.6/s rather than the load
+generator's 28.4/s, the difference being the page's own per-email bookkeeping and DOM updates.
+
+**The outputs are identical either way** — 154/137/107/52/13/8/7/7/15 across the operations before and
+after — which is the point of checking: parallelism changed the throughput and nothing else.
 
 ## Labels are class names, not assertions
 
@@ -154,8 +213,11 @@ an `origin.raw` Gmail payload. **No corpus ships with this repo — it is someon
 is gitignored and holds the real folder names; `config.yaml.example` has generic placeholders.
 
 `protobuf` and `sentencepiece` are required: DeBERTa-v3's tokenizer fails to load without them.
-`bun run model` runs under `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0`, so a
-runaway load kills its own process rather than the desktop.
+
+`bun run model` starts 8 worker processes of 4 threads each under
+`systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0` — a kernel-enforced ceiling, so a
+runaway load kills its own cgroup rather than the desktop. Tune with `--workers` and `--threads`; see
+[Scale with processes, not threads](#scale-with-processes-not-threads).
 
 ## Architecture
 
