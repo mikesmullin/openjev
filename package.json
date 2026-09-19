@@ -1,0 +1,13 @@
+{
+  "name": "simplejev-mars",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "simple-jev (Qwen3.8-27B via llama.cpp) picking targets in vibe-arcade's MARS RAID",
+  "scripts": {
+    "game": "bash scripts/fetch-game.sh",
+    "model": "./.venv/bin/python server/jev_server.py --llama http://127.0.0.1:1234 --port 8750",
+    "dev": "bun server/static.js",
+    "start": "bun server/static.js"
+  }
+}

@@ -1,0 +1,12 @@
+# python env for the adapter (pydantic + numpy only — the weights live in llama-server)
+.venv/
+
+# fetched and patched at setup: vibe-arcade's game (see scripts/fetch-game.sh)
+web/game/mars.html
+
+__pycache__/
+*.pyc
+
+node_modules/
+bun.lock
+tmp/

@@ -1,0 +1,3 @@
+[submodule "vendor/simple-jev"]
+	path = vendor/simple-jev
+	url = https://github.com/featherless-ai/simple-jev.git
