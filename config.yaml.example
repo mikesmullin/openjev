@@ -1,0 +1,38 @@
+# Example inbox taxonomy - safe to commit. Copy to config.yaml and edit:
+#   cp config.yaml.example config.yaml
+#
+# `label` is the string the classifier actually sees. Keep it to two or three words that NAME
+# the class: GLiNER matches class names, and full sentences collapse the whole inbox onto one
+# answer (measured: 7 of 8 emails -> 'skip'). Bare folder names work but confuse neighbours --
+# a card charge filed as Income until Expenses became 'purchase receipt'.
+#
+# `description` is for humans, and is what the openjev-email branch scored as a hypothesis.
+#
+# There is no spam_signals list here: spam is asked as a two-class question, so P(spam) is a
+# real probability. See web/questions.js.
+folders:
+- name: Receipts
+  description: This is a receipt, invoice, or order confirmation for something the recipient bought, with an amount stated.
+  label: purchase receipt
+- name: Statements
+  description: This is a periodic account statement from a bank or credit card.
+  label: bank statement
+- name: Travel
+  description: 'This is about a trip: a flight, hotel, reservation, or ticket.'
+  label: trip booking
+- name: Newsletters
+  description: 'This is a periodical the recipient subscribed to and reads at leisure: a digest or roundup.'
+  label: newsletter
+- name: Work
+  description: This addresses the recipient as an employee, about internal company matters.
+  label: internal company mail
+operations:
+- op: delete
+  description: This is a promotional advertisement from a shop, offering a sale, a discount, a deal or reward points.
+  label: advertisement
+- op: skip
+  description: This needs the operator to read it and decide personally, because it concerns something only they can judge.
+  label: needs a personal decision
+- op: archive
+  description: This is ordinary correspondence that has served its purpose and just needs filing away out of the inbox.
+  label: routine correspondence
