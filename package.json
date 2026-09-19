@@ -1,0 +1,13 @@
+{
+  "name": "gliner-mars",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GLiNER 2.5 (194M DeBERTa-v3 encoder, CPU) playing vibe-arcade's MARS RAID",
+  "scripts": {
+    "game": "bash scripts/fetch-game.sh",
+    "model": "./.venv/bin/python server/gliner_server.py --port 8780",
+    "dev": "bun server/static.js",
+    "start": "bun server/static.js"
+  }
+}

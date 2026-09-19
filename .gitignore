@@ -1,0 +1,14 @@
+# python env: torch + transformers + compressed-tensors (weights live in the HF cache)
+.venv/
+
+__pycache__/
+*.pyc
+
+# scratch benchmark output
+out/
+
+# second env for the vLLM attempt (7.6 GB)
+.venv-vllm/
+
+# fetched and patched at setup: vibe-arcade's game (see scripts/fetch-game.sh)
+web/game/mars.html
