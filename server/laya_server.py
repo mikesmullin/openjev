@@ -18,7 +18,10 @@ essentially unchanged, and this server is a thin translation:
     simple-jev     Qwen3.8-27B via llama.cpp     ~430 ms    GPU
     DiffusionGemma 26B-A4B text diffusion       ~3700 ms    GPU + offload
     GLiNER 2.5     194M DeBERTa-v3 encoder        ~71 ms    CPU   (23 ms/question)
-    Laya           421M ModernBERT-large          ~13 ms    CPU   (3.2 ms/question)
+    Laya           421M ModernBERT-large          ~14 ms    GPU   (4.7 ms/question)
+                                                 ~186 ms    CPU   (62 ms/question)
+
+Laya needs the GPU. On the CPU it is slower per question than GLiNER, which is a third its size.
 
 And unlike GLiNER it returns a real distribution over the options, so the page's ballot bars show a
 spread again rather than one full bar.
@@ -126,14 +129,18 @@ def describe(state):
 
 
 class Decider:
-    def __init__(self, model_id, threads):
+    def __init__(self, model_id, threads, device):
         import torch
         torch.set_num_threads(threads)
         import laya
         t0 = time.perf_counter()
-        self.agent = laya.load(model_id)
-        self.model_id, self.threads = model_id, threads
-        print(f"loaded {model_id} on CPU ({threads} threads) in {time.perf_counter() - t0:.1f}s", flush=True)
+        # Say the device explicitly. laya.load() defaults to CUDA when a GPU is visible, and an earlier
+        # version of this file set torch threads, assumed that meant CPU, and reported CPU timings that
+        # were really GPU timings.
+        self.agent = laya.load(model_id, device=device)
+        self.model_id, self.threads, self.device = model_id, threads, device
+        print(f"loaded {model_id} on {device} ({threads} threads) in {time.perf_counter() - t0:.1f}s",
+              flush=True)
         self.lock = __import__("threading").Lock()
 
     def warm(self):
@@ -193,8 +200,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/health"):
-            return self._send({"ok": True, "backend": "laya-cpu", "model": self.svc.model_id,
-                               "threads": self.svc.threads, "device": "cpu"})
+            return self._send({"ok": True, "backend": "laya", "model": self.svc.model_id,
+                               "threads": self.svc.threads, "device": self.svc.device})
         self._send({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -215,8 +222,9 @@ def main():
     ap.add_argument("--model", default=MODEL_ID)
     ap.add_argument("--port", type=int, default=8790)
     ap.add_argument("--threads", type=int, default=24)
+    ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = ap.parse_args()
-    Handler.svc = Decider(args.model, args.threads)
+    Handler.svc = Decider(args.model, args.threads, args.device)
     Handler.svc.warm()
     print(f"ready  ->  http://127.0.0.1:{args.port}/v1/classifier", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
