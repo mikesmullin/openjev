@@ -1,0 +1,13 @@
+{
+  "name": "laya-mars",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Laya (421M ModernBERT-large decision model, CPU) playing vibe-arcade's MARS RAID",
+  "scripts": {
+    "game": "bash scripts/fetch-game.sh",
+    "model": "systemd-run --user --scope -q -p MemoryMax=12G -p MemorySwapMax=0 ./.venv/bin/python server/laya_server.py --port 8790 --threads 24",
+    "dev": "bun server/static.js",
+    "start": "bun server/static.js"
+  }
+}
