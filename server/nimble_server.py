@@ -267,26 +267,45 @@ class Scorer(CudaCandidateScorer):
 
 
 def _widen(cache, n):
-    """Repeat a batch-1 KV cache across n rows, in place.
+    """Repeat a batch-1 cache across n rows, in place.
 
-    Transformers has moved this around between versions (legacy tuples, `key_cache`/`value_cache` lists,
-    and now per-layer objects), and getting it wrong is silent -- the rows still run, they just attend to
-    the wrong thing. So handle the shapes explicitly and refuse anything unrecognised.
+    Qwen3.5 is a *hybrid* attention model, and that is the whole difficulty here. Of its 32 layers only
+    8 are ordinary attention with a `keys`/`values` KV cache; the other 24 are linear attention, and
+    their state is a fixed-size recurrent summary plus the causal conv's left context:
+
+        LinearAttentionLayer   conv_states {0: (1, 8192, 4)}   recurrent_states {0: (1, 32, 128, 128)}
+        DynamicLayer           keys (1, 4, P, 256)             values (1, 4, P, 256)
+
+    Widening only the KV half is what a pure-attention model would need, and it fails loudly here --
+    `update_conv_state` concatenates the stored state with the incoming one and gets batch 1 against
+    batch 4. That is the good case. The bad case is a cache type that widens silently and wrongly, which
+    is why anything unrecognised raises instead of being skipped.
+
+    Replicating a recurrent state across rows is legitimate: every row continues from the same prefix,
+    so they genuinely share both the linear-attention summary and the conv's left context. It is the
+    same claim the KV half makes, just over a different representation of the past.
     """
     layers = getattr(cache, "layers", None)
-    if layers is not None:
-        for layer in layers:
-            for attr in ("keys", "values"):
-                t = getattr(layer, attr, None)
-                if t is not None:
-                    setattr(layer, attr, t.expand(n, *t.shape[1:]).contiguous())
-        return
-    if hasattr(cache, "key_cache") and hasattr(cache, "value_cache"):
-        for store in (cache.key_cache, cache.value_cache):
-            for i, t in enumerate(store):
-                store[i] = t.expand(n, *t.shape[1:]).contiguous()
-        return
-    raise RuntimeError(f"unrecognised KV cache type {type(cache).__name__}; cannot widen for prefix mode")
+    if layers is None:
+        raise RuntimeError(f"unrecognised cache type {type(cache).__name__}; cannot widen for prefix mode")
+    widened = 0
+    for layer in layers:
+        # ordinary attention: [batch, heads, positions, dim]
+        for attr in ("keys", "values"):
+            t = getattr(layer, attr, None)
+            if isinstance(t, torch.Tensor):
+                setattr(layer, attr, t.expand(n, *t.shape[1:]).contiguous())
+                widened += 1
+        # linear attention: dicts keyed by state index, batch first
+        for attr in ("conv_states", "recurrent_states"):
+            store = getattr(layer, attr, None)
+            if isinstance(store, dict):
+                for key, t in store.items():
+                    if isinstance(t, torch.Tensor):
+                        store[key] = t.expand(n, *t.shape[1:]).contiguous()
+                        widened += 1
+    if not widened:
+        raise RuntimeError("cache held no tensors to widen; prefix mode would silently score the prefix")
 
 
 # ---------------------------------------------------------------------------- http
@@ -406,21 +425,35 @@ def verify(scorer, repeats=5):
     print(f"prefix shared by all {len(plan)} fields: "
           f"{len(scorer.prepare(context, schema).prefix_ids)} tokens\n")
 
+    # What counts as agreement.
+    #
+    # Not logit equality. BF16 matmul is not associative, so changing the SHAPE of the computation moves
+    # the last bits, and both fast modes change it: `batched` runs N rows through one GEMM, `prefix`
+    # splits one row's forward pass into a prefill and a suffix. Measured on this payload, the gap is
+    # not padding and not the cache surgery:
+    #
+    #   batched, rows all the same length, zero padding      0.19    still differs
+    #   batched, one row at a time (batch 1, no padding)     0.0000  exact
+    #   chunked prefill, batch 1, NO cache widening at all   0.3618  == prefix mode's own gap
+    #
+    # The last line is the important control: splitting the pass reproduces the whole of prefix mode's
+    # disagreement without widening anything, so the difference is arithmetic rather than a broken mask
+    # or a mis-replicated recurrent state. What has to hold is that the ANSWER does not move: the argmax
+    # must match, and the probabilities the ballot is ranked on must stay close.
+    reference_answers = to_answers(reference, plan)
     ok = True
     for mode in ("batched", "prefix"):
         got = scorer.score(context, schema, mode=mode)
-        worst, where = 0.0, ""
-        for name in plan:
-            for key, value in reference["fields"][name]["logits"].items():
-                d = abs(value - got["fields"][name]["logits"][key])
-                if d > worst:
-                    worst, where = d, f"{name}.{key}"
+        answers = to_answers(got, plan)
+        worst_logit = max(abs(v - got["fields"][n]["logits"][k])
+                          for n in plan for k, v in reference["fields"][n]["logits"].items())
+        worst_p = max((abs(reference_answers[n]["probabilities"][k] - answers[n]["probabilities"][k])
+                       for n in plan for k in reference_answers[n].get("probabilities", {})), default=0.0)
         agree = got["output"] == reference["output"]
-        # BF16 matmul is not associative, so a different batch shape moves the last bits. A disagreement
-        # that changes an argmax is a bug; one in the third decimal of a logit is arithmetic.
-        flag = "ok " if agree and worst < 0.05 else "BAD"
-        ok &= agree and worst < 0.05
-        print(f"  {flag} {mode:11s} max |dlogit| {worst:.4f} at {where:24s} argmax {'agrees' if agree else 'DIFFERS'}")
+        good = agree and worst_p < 0.1
+        ok &= good
+        print(f"  {'ok ' if good else 'BAD'} {mode:11s} argmax {'agrees' if agree else 'DIFFERS'}"
+              f"   max |dp| {worst_p:.5f}   max |dlogit| {worst_logit:.4f}")
     print()
 
     for mode in ("independent", "batched", "prefix"):
