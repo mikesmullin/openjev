@@ -131,9 +131,14 @@ def torch_metadata(repo, subfolder, agent, device_arg):
                 pass
     except Exception:
         hardware, versions = hardware_name(), {}
+    dtype = str(getattr(agent, "dtype", ""))
+    precision = {"torch.float32": "FP32", "torch.float16": "FP16", "torch.bfloat16": "BF16"}.get(
+        dtype, dtype or "FP32"
+    )
     return {
         "name": f"{repo}" + (f"/{subfolder}" if subfolder else ""),
         "backend": "torch",
+        "precision": precision,
         "device": str(agent.device),
         "device_arg": device_arg or "auto",
         "hardware": hardware,
@@ -154,6 +159,9 @@ def checkpoint_metadata(path):
     manifest = path / "manifest.json"
     source = json.loads(manifest.read_text()) if manifest.exists() else {}
     return {
+        "backend": "mlx",
+        "precision": "FP16",
+        "device": "Apple GPU",
         "name": values.get("repository", path.name),
         "source_revision": values.get("source_revision"),
         "weight_sha256_from_manifest": source.get("files", {})

@@ -108,9 +108,9 @@
   <main class="shell">
     <header>
       <div>
-        <div class="eyebrow">Local Apple Silicon Demo</div>
+        <div class="eyebrow" id="eyebrow">Local Apple Silicon Demo</div>
         <h1>Laya <span style="color:var(--cyan)">Snake</span></h1>
-        <p class="subtitle">A real Snake game where every move is a typed decision from Laya MLX — running locally on this Mac, with the deterministic safety shield enabled.</p>
+        <p class="subtitle" id="subtitle">A real Snake game where every move is a typed decision from Laya MLX — running locally on this Mac, with the deterministic safety shield enabled.</p>
       </div>
       <div id="status" class="status"><i class="dot"></i><span>CONNECTING</span></div>
     </header>
@@ -149,11 +149,11 @@
         <section class="panel model-panel">
           <div class="section-title"><span>Model status</span><small>fully local</small></div>
           <div id="model-name" class="model-name">Loading checkpoint…</div>
-          <p class="model-copy">The browser is only the display. The Python process owns the MLX model and makes each decision on the Mac's GPU.</p>
+          <p class="model-copy" id="model-copy">The browser is only the display. The Python process owns the MLX model and makes each decision on the Mac's GPU.</p>
           <div class="model-details">
             <span>Hardware <b id="hardware">—</b></span>
-            <span>Precision <b>FP16</b></span>
-            <span>Device <b>Apple GPU</b></span>
+            <span>Precision <b id="precision">FP16</b></span>
+            <span>Device <b id="device-el">Apple GPU</b></span>
             <span>Network <b>offline</b></span>
           </div>
         </section>
@@ -173,6 +173,19 @@
     const DIRECTIONS = ["UP", "DOWN", "LEFT", "RIGHT"];
     const state = { snapshot: null, decision: null, stats: null, running: true, busy: false, timer: null, speed: 12 };
     const $ = (id) => document.getElementById(id);
+    let liveLabel = "LIVE · LOCAL MLX";
+    function applyModel(model) {
+      $("model-name").textContent = model.name || "aac6fef/laya-multilingual-mlx";
+      $("hardware").textContent = model.hardware || "Apple Silicon";
+      if ((model.backend || "mlx") === "torch") {
+        liveLabel = "LIVE · LOCAL TORCH";
+        $("eyebrow").textContent = "Local GPU demo";
+        $("subtitle").textContent = "A real Snake game where every move is a typed decision from Laya — running locally via PyTorch, with the deterministic safety shield enabled.";
+        $("model-copy").textContent = "The browser is only the display. The Python process owns the torch model and makes each decision locally.";
+        $("precision").textContent = model.precision || "FP32";
+        $("device-el").textContent = model.device || "cuda";
+      }
+    }
     const canvas = $("board");
     const ctx = canvas.getContext("2d");
 
@@ -283,7 +296,7 @@
         if (data.after.won || !data.after.alive) {
           state.running = false; $("pause").textContent = "Resume"; setStatus("ROUND COMPLETE", "live");
         } else {
-          setStatus("LIVE · LOCAL MLX", "live");
+          setStatus(liveLabel, "live");
         }
       } catch (error) {
         state.running = false; $("pause").textContent = "Resume"; setStatus("ERROR", "error");
@@ -301,14 +314,14 @@
       clearTimeout(state.timer);
       try {
         const data = await request("/api/reset", { method: "POST", body: "{}" });
-        render(data.game, null, data.stats); state.running = true; $("pause").textContent = "Pause"; setStatus("LIVE · LOCAL MLX", "live"); schedule();
+        render(data.game, null, data.stats); state.running = true; $("pause").textContent = "Pause"; setStatus(liveLabel, "live"); schedule();
       } catch (error) { setStatus("ERROR", "error"); }
     }
 
     $("pause").addEventListener("click", () => {
       state.running = !state.running;
       $("pause").textContent = state.running ? "Pause" : "Resume";
-      setStatus(state.running ? "LIVE · LOCAL MLX" : "PAUSED", state.running ? "live" : "");
+      setStatus(state.running ? liveLabel : "PAUSED", state.running ? "live" : "");
       if (state.running) schedule(); else clearTimeout(state.timer);
     });
     $("reset").addEventListener("click", reset);
@@ -325,10 +338,8 @@
       try {
         const data = await request("/api/status");
         render(data.game, null, data.stats);
-        const model = data.model || {};
-        $("model-name").textContent = model.name || "aac6fef/laya-multilingual-mlx";
-        $("hardware").textContent = model.hardware || "Apple Silicon";
-        setStatus("LIVE · LOCAL MLX", "live");
+        applyModel(data.model || {});
+        setStatus(liveLabel, "live");
         schedule();
       } catch (error) {
         setStatus("ERROR", "error"); $("overlay").classList.add("show"); $("overlay-title").textContent = "Could not connect"; $("overlay-copy").textContent = error.message;
