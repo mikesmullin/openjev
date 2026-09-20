@@ -6,10 +6,14 @@
  * ended up fighting its own wording -- a sentence can be perfectly true and still be a terrible reason to
  * act on it.
  *
- * simple-jev asks instead. One shared state, several named questions, each answered from the logits of
- * its own permitted labels. Target choice is a `choice` over live candidates; whether to keep pressing
- * is its own `choice`; how much danger the ship is in is a `score` on a rubric. The ballot no longer has
- * to double as the argument.
+ * Bespoke Nimble asks instead. One shared context, a flat schema of named fields, each answered from
+ * the logits of its own permitted answer codes. Target choice is an enum over live candidates; whether
+ * to keep pressing is its own enum; whether to wake the scorpion is a boolean; how much danger the ship
+ * is in is an ordered enum read back as an expected level. The ballot no longer has to double as the
+ * argument.
+ *
+ * The wire format is still simple-jev v1, so this file is the simplejev-mars file and the two branches
+ * are directly comparable; server/nimble_server.py translates v1's vocabulary into Nimble's schema.
  *
  * The code still flies and aims (see web/game/mars-hook.js). Geometry is the part a hand-written
  * controller does better; the model answers the judgement calls.
@@ -18,17 +22,34 @@
 const TICK = 400;          // ms floor between decisions; in practice the model's RTT sets the pace
 const HISTORY = 120;       // samples kept for the sparklines
 
-/* Not every question deserves the same cadence.
+/* Every question, every tick.
  *
- * Every question costs a full prefill of its own tail, every tick (see the README: -ub 2048 buys
- * throughput at the price of partial prefix reuse). So asking four questions at 60 Hz of game time is
- * paying for judgements that do not change that fast. `target` does change fast -- it is the aiming
- * loop, and it goes every tick. Posture, threat and whether to wake the scorpion are slower calls, and
- * holding the previous answer for a few hundred milliseconds costs nothing: the autopilot jinks
- * continuously between decisions regardless.
+ * simplejev-mars asked the slow questions only every third decision, because there each one cost its
+ * own prefill and its own ~100 ms request floor, so four questions was four times the latency. That
+ * is not the shape here. The fields of one decision share a single prefill (server/nimble_server.py,
+ * `prefix` mode), and the whole schema is rendered once rather than per question, so on this payload:
  *
- * This is also what makes questions-per-inference worth plotting rather than a constant. */
-const CADENCE = 3;         // ask the slow questions every Nth decision
+ *     target only  76.5 ms      +posture  83.5 ms      +threat  110.8 ms      +wake  115.1 ms
+ *
+ * The fourth question costs 4.5 ms. Staleness costs more than that -- holding a posture or threat
+ * reading for three ticks means breaking off up to a second late -- so the cadence is gone and every
+ * question is asked every tick. questions-per-inference is now 3 or 4 depending only on whether the
+ * scorpion is still buried, not on a counter. */
+const CADENCE = 1;         // every question, every decision; see above
+const BREAK_OFF = 0.75;    // how sure `posture` must be before it vetoes shooting; see the loop below
+/* Breaking off has to be bounded, not just confident.
+ *
+ * evade() flies 600 m away from the nearest saucer. Saucers respawn without limit, so once the colony
+ * is gone and twelve of them are up, "break off" is defensible on almost every tick -- and each one
+ * restarts the run at the boss from 600 m. Measured: the scorpion's tail sat at 73 percent for four
+ * minutes while `target` correctly picked it at 0.63 every tick and the ship never got inside firing
+ * range. The veto was not wrong about the danger; it was just never allowed to end.
+ *
+ * So a break-off lasts at most BREAK_MAX consecutive decisions, and after that the agent must press for
+ * at least BREAK_COOLDOWN before it may break off again. The model still decides whether the fight is
+ * going badly; the harness decides that disengaging forever is not a strategy. */
+const BREAK_MAX = 6;       // consecutive evade decisions before the agent must re-engage
+const BREAK_COOLDOWN = 8;  // decisions of pressing required before breaking off again
 
 /* One line per *candidate*, the way the openjev branch plotted one line per option.
  *
@@ -78,6 +99,8 @@ export function Agent(M) {
     running: false, arming: false, decisions: 0,
     premise: '', options: [], chosen: null, history: [], game: {},
     posture: null, postureP: 0, threat: null, wake: null,
+    breakRun: 0, pressRun: BREAK_COOLDOWN,   // bounded break-off; starts off cooldown
+
     // Latency bookkeeping. rtt is measured in the browser around the fetch, so it is what the agent
     // actually waits for; serverMs is what the adapter spent talking to llama.cpp. The gap between them
     // is HTTP and proxy overhead, and it is worth being able to see it.
@@ -332,14 +355,16 @@ export function Agent(M) {
       const add = (target, kind, uid, description) =>
         candidates.push({ uid, kind, target, description, color: colorOf(uid, kind), sid: hash6(uid) });
 
-      /* v1 renders the candidate list into the prompt TWICE (section 5: the selected question is asked,
-         then asked again verbatim), so every extra candidate and every extra clause is paid for twice in
-         prompt evaluation. Two per kind is enough to express a preference -- the list is sorted by
-         distance, so the third-nearest building is never the interesting answer -- and it keeps the
-         choice question's tail short enough to decide inside a second. */
+      /* Three per kind, where simplejev-mars could only afford two.
+         v1 rendered the candidate list into the prompt twice, so every extra candidate was paid for
+         twice in prompt evaluation on a backend where that was the whole cost. Nimble renders the
+         schema once and the candidates ride inside the shared prefix, so they are prefilled once per
+         decision rather than once per question. Measured: 4 candidates 117 ms, 8 candidates 134 ms,
+         12 candidates 158 ms, and even 12 leaves the prompt at 1102 tokens against a 2048 budget.
+         The list is sorted by distance, so this mostly buys a third building to choose between. */
       const bleeding = s.recentDamage >= 12 || s.hull < 40;
 
-      for (const b of near('boss', 2))
+      for (const b of near('boss', 3))
         add(b, 'boss', b.uid || `boss:${b.label}`,
             `Attack ${b.label}: the only part of the scorpion that can be hurt in this phase, down to ${Math.round(100 * b.hp / b.max)} percent.`);
       /* A candidate description has to argue FOR its action. The first version of the saucer sentence
@@ -347,11 +372,11 @@ export function Agent(M) {
          context, and is an argument against picking it -- so saucers scored ~0.01 while the ship was
          being shot down. That caveat belongs in the shared state, where it informs every question
          equally. What belongs here is the reason to shoot this saucer now, escalating as the hull drops. */
-      for (const a of near('saucer', 2))
+      for (const a of near('saucer', 3))
         add(a, 'saucer', a.uid, bleeding
           ? `Shoot down the alien saucer ${Math.round(a.dist)} metres away. The ship is at ${s.hull} percent hull and cannot finish the mission if it is destroyed first.`
           : `Shoot down the alien saucer ${Math.round(a.dist)} metres away. It is firing on the ship.`);
-      for (const b of near('building', 2))
+      for (const b of near('building', 3))
         add(b, 'building', b.uid,
             `Destroy the colony building ${Math.round(b.dist)} metres away. Flattening the colony is the mission and ${s.buildings} still stand${s.buildings === 1 ? 's' : ''}.`);
       /* "Hold fire" is only on the ballot when there is nothing real to shoot at.
@@ -388,13 +413,15 @@ export function Agent(M) {
         ],
       };
 
-      // Question order is preserved by simple-jev, and so is candidate order. The uid keys are not
-      // numeric-looking, so JS object enumeration keeps insertion order here.
+      // Field order and candidate order are both preserved end to end: JS object enumeration keeps
+      // insertion order for these non-numeric-looking uid keys, and Nimble assigns answer codes A, B,
+      // C... in that same order. The uid keys are not numeric-looking, so this is stable.
       const criteria = {};
       for (const c of candidates) criteria[c.uid] = c.description;
 
-      // A choice needs 2-50 candidates. With an empty sky and no colony left there may be fewer than
-      // that even after the hold option, and then there is simply no target question to ask.
+      // Nimble's answer codes are single letters, so an enum takes 2-26 candidates. With an empty sky
+      // and no colony left there may be fewer than two even after the hold option, and then there is
+      // simply no target question to ask.
       const questions = {};
       if (candidates.length >= 2)
         questions.target = { type: 'choice', instructions: 'What should the gunship attack right now?', criteria };
@@ -527,9 +554,26 @@ export function Agent(M) {
       this.decisions++;
 
       /* Act. posture is a veto over target: the model can decide the fight is lost before it decides
-         what to shoot, and breaking off has to win when it does. */
+         what to shoot, and breaking off has to win when it does.
+       *
+       * But a veto needs conviction, not a plurality. Breaking off stops the agent shooting at all, so
+       * a bare majority for `break_off` halts the mission: measured mid-game at hull 82, posture read
+       * break_off 0.58 while target read `destroy the colony building` 0.75, and the raid sat at 7 of
+       * 11 buildings for ninety seconds -- evading, never firing. The target question was right and the
+       * veto was overriding it on a coin flip.
+       *
+       * This is what the probabilities are for. An argmax-only interface would have to take 0.58 as a
+       * decision; Nimble returns a distribution, so the agent can require the veto to be decisive and
+       * treat "narrowly break off" as "keep fighting, but the fight is getting bad". Not calibration --
+       * upstream is explicit that 0.9 does not mean right 90% of the time -- just a threshold tested on
+       * this task, which is exactly what they recommend doing with it. */
       const pick = candidates.find(c => c.uid === this.chosen);
-      if (this.posture === 'break_off') this.mars.evade();
+      // Bounded break-off: confident enough, not already over the limit, and off cooldown.
+      const wantsBreak = this.posture === 'break_off' && this.postureP >= BREAK_OFF;
+      const mayBreak = wantsBreak && this.breakRun < BREAK_MAX && this.pressRun >= BREAK_COOLDOWN;
+      if (mayBreak) { this.breakRun++; this.pressRun = 0; }
+      else { this.pressRun++; if (!wantsBreak) this.breakRun = 0; }
+      if (mayBreak) this.mars.evade();
       else if (this.wake && this.wake.choice === 'yes') this.mars.wakeBoss();
       else if (!pick || pick.target.hold) this.mars.release();
       else this.mars.aim(pick.target);
