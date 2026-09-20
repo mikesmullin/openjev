@@ -1,0 +1,3 @@
+[submodule "vendor/nimble"]
+	path = vendor/nimble
+	url = https://github.com/bespokelabsai/nimble.git

@@ -1,0 +1,15 @@
+# python env
+.venv/
+
+# fetched and patched at setup: vibe-arcade's game (see scripts/fetch-game.sh)
+web/game/mars.html
+
+# model weights + the merged checkpoint prepared by scripts/prepare-model.py
+.cache/
+
+__pycache__/
+*.pyc
+
+node_modules/
+bun.lock
+tmp/

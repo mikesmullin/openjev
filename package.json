@@ -1,0 +1,15 @@
+{
+  "name": "nimble-mars",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bespoke Nimble 9B making typed decisions in vibe-arcade's MARS RAID",
+  "scripts": {
+    "game": "bash scripts/fetch-game.sh",
+    "model:prepare": "./.venv/bin/python scripts/prepare-model.py",
+    "model": "./.venv/bin/python server/nimble_server.py --port 8750 --mode ${NIMBLE_MODE:-prefix}",
+    "model:verify": "./.venv/bin/python server/nimble_server.py --verify",
+    "dev": "bun server/static.js",
+    "start": "bun server/static.js"
+  }
+}
