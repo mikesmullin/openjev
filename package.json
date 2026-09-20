@@ -1,14 +1,15 @@
 {
-  "name": "nimble-mars",
+  "name": "verdict-mars",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Bespoke Nimble 9B making typed decisions in vibe-arcade's MARS RAID",
+  "description": "openJev-verdict-2.0 (149.6M ModernBERT) making typed decisions in vibe-arcade's MARS RAID",
   "scripts": {
     "game": "bash scripts/fetch-game.sh",
-    "model:prepare": "./.venv/bin/python scripts/prepare-model.py",
-    "model": "./.venv/bin/python server/nimble_server.py --port 8750 --mode ${NIMBLE_MODE:-prefix}",
-    "model:verify": "./.venv/bin/python server/nimble_server.py --verify",
+    "model:prepare": "bash scripts/download-verdict.sh --slim",
+    "model": "./.venv/bin/python server/verdict_server.py --port 8750",
+    "model:cpu": "./.venv/bin/python server/verdict_server.py --port 8750 --device cpu",
+    "model:selftest": "./.venv/bin/python server/verdict_server.py --selftest",
     "dev": "bun server/static.js",
     "start": "bun server/static.js"
   }

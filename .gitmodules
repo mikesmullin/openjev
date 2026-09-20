@@ -1,3 +1,3 @@
-[submodule "vendor/nimble"]
-	path = vendor/nimble
-	url = https://github.com/bespokelabsai/nimble.git
+[submodule "vendor/verdict"]
+	path = vendor/verdict
+	url = https://github.com/Heman10x-NGU/openJev-verdict-2.0.git
