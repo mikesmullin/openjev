@@ -12,6 +12,18 @@ From this repository on an Apple silicon Mac:
 uv run --extra demo laya-snake
 ```
 
+### Browser view
+
+This checkout also includes a local browser view backed by the same `LayaPolicy` and `SnakeGame`. Start it from the repository root in a terminal:
+
+```bash
+uv run --extra demo python -m laya_mlx.snake.web \
+  --model models/hub/laya-multilingual-mlx \
+  --port 8765
+```
+
+Open `http://127.0.0.1:8765/` in the VS Code integrated browser. The Python process keeps the MLX checkpoint in memory, and every displayed move is a fresh local inference; the web page is only a display and control surface. The browser view has the same cycle safety shield, plus pause, reset and pacing controls.
+
 The default model is `aac6fef/laya-multilingual-mlx`, using the original FP16 weights. The demo first checks `models/hub/laya-multilingual-mlx` and `models/laya-multilingual`, then the local Hugging Face cache. It never downloads a missing model during play. On a fresh checkout, download the weights once beforehand:
 
 ```bash
