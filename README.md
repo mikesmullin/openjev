@@ -1,6 +1,6 @@
 # Laya-MLX
 
-![Laya MLX playing Snake — actual decisions, original speed](https://raw.githubusercontent.com/mizorewww/laya-mlx/main/docs/assets/snake-demo.gif)
+[![Laya MLX browser Snake demo — actual local decisions](docs/assets/snake-browser.gif)](docs/assets/snake-browser.mp4)
 
 **Open-weight typed decisions, running natively on Apple Silicon.**
 
@@ -8,7 +8,7 @@
 
 [中文](https://github.com/mizorewww/laya-mlx/blob/main/README.zh-CN.md) · [Benchmarks](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md) · [Snake demo](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_DEMO.md) · [Hugging Face weights](https://huggingface.co/aac6fef/laya-mlx)
 
-The GIF is an original-speed render of a real local Snake run. Every move calls Laya; the visible cycle safety layer can correct unsafe proposals. The latency figures above are the separate **one-question API benchmark**, not the frame time of the three-question Snake loop. [Watch the 30-second MP4](https://github.com/mizorewww/laya-mlx/blob/main/docs/assets/snake-demo.mp4) · [Snake speed and stability](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_BENCHMARKS.md).
+The GIF is a 13-second browser recording of a real local Snake run on Apple Silicon. Every move calls Laya; the visible cycle safety layer can correct unsafe proposals. The latency figures above are the separate **one-question API benchmark**, not the frame time of the three-question Snake loop. [Watch the 13-second MP4](docs/assets/snake-browser.mp4) · [Snake speed and stability](https://github.com/mikesmullin/openjev/blob/laya-snake/docs/SNAKE_BENCHMARKS.md).
 
 ## Quick start
 

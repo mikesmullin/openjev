@@ -24,6 +24,24 @@ uv run --extra demo python -m laya_mlx.snake.web \
 
 Open `http://127.0.0.1:8765/` in the VS Code integrated browser. The Python process keeps the MLX checkpoint in memory, and every displayed move is a fresh local inference; the web page is only a display and control surface. The browser view has the same cycle safety shield, plus pause, reset and pacing controls.
 
+### Linux / NVIDIA backend
+
+On non-macOS hosts the demo auto-selects the upstream PyTorch backend instead of MLX. This needs the pinned upstream checkout and the original (non-MLX) weights, both usable offline once cached:
+
+```bash
+gh repo clone NandhaKishorM/laya .upstream
+git -C .upstream checkout 6a5819129eb220570792e417e49723d697efd76f
+hf download convaiinnovations/laya --allow-patterns 'multilingual/*'
+```
+
+```bash
+# auto backend (MLX on Apple Silicon, torch elsewhere); explicit torch + CUDA:
+python -m laya_mlx.snake.web --backend torch --device cuda --port 8765
+python -m laya_mlx.snake --backend torch --device cuda --steps 50 --headless
+```
+
+`--backend auto|mlx|torch` and `--device` (torch `cuda`, `cuda:0`, `cpu`, `mps`; default auto) work on both the terminal demo and the browser server. MLX checkpoint IDs map automatically (`aac6fef/laya-multilingual-mlx` → `convaiinnovations/laya` + `multilingual` subfolder). `--optimize` is MLX-only and ignored on torch. If the GPU is busy, upstream falls back to CPU with a warning.
+
 The default model is `aac6fef/laya-multilingual-mlx`, using the original FP16 weights. The demo first checks `models/hub/laya-multilingual-mlx` and `models/laya-multilingual`, then the local Hugging Face cache. It never downloads a missing model during play. On a fresh checkout, download the weights once beforehand:
 
 ```bash
