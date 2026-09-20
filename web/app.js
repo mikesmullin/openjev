@@ -6,14 +6,18 @@
  * ended up fighting its own wording -- a sentence can be perfectly true and still be a terrible reason to
  * act on it.
  *
- * Bespoke Nimble asks instead. One shared context, a flat schema of named fields, each answered from
- * the logits of its own permitted answer codes. Target choice is an enum over live candidates; whether
- * to keep pressing is its own enum; whether to wake the scorpion is a boolean; how much danger the ship
- * is in is an ordered enum read back as an expected level. The ballot no longer has to double as the
- * argument.
+ * openJev-verdict-2.0 asks instead, and it is the first model here whose own primitives ARE v1's:
+ * Choice, Score and Noul. Target choice is a `choice` over live candidates; whether to keep pressing is
+ * its own `choice`; how much danger the ship is in is a `score` on a rubric; whether to wake the
+ * scorpion is a `noul` -- a proposition the model judges true or false, the type simplejev-mars had to
+ * abandon on a Qwen and which works here because nothing has to emit a digit.
  *
- * The wire format is still simple-jev v1, so this file is the simplejev-mars file and the two branches
- * are directly comparable; server/nimble_server.py translates v1's vocabulary into Nimble's schema.
+ * Every question in a decision is one batched forward pass through a 151M encoder, so the whole
+ * decision costs ~12 ms and there is no cadence to tune.
+ *
+ * The other difference is abstention. Every query carries a reserved `__insufficient_evidence__`
+ * candidate that the model can select instead of any real option, so "nothing here is right" is an
+ * answer rather than an option someone had to write persuasively.
  *
  * The code still flies and aims (see web/game/mars-hook.js). Geometry is the part a hand-written
  * controller does better; the model answers the judgement calls.
@@ -25,16 +29,13 @@ const HISTORY = 120;       // samples kept for the sparklines
 /* Every question, every tick.
  *
  * simplejev-mars asked the slow questions only every third decision, because there each one cost its
- * own prefill and its own ~100 ms request floor, so four questions was four times the latency. That
- * is not the shape here. The fields of one decision share a single prefill (server/nimble_server.py,
- * `prefix` mode), and the whole schema is rendered once rather than per question, so on this payload:
+ * own prefill and its own ~100 ms request floor. nimble-mars got that down to one shared prefill.
+ * Here the architecture removes the question entirely: the options live inside one sequence and every
+ * question of a decision goes through as one padded batch, so `forward_call_count` is 1 regardless.
  *
- *     target only  76.5 ms      +posture  83.5 ms      +threat  110.8 ms      +wake  115.1 ms
+ *     1 question 6.8 ms     2 -> 7.8 ms     3 -> 9.9 ms     4 -> 12.0 ms
  *
- * The fourth question costs 4.5 ms. Staleness costs more than that -- holding a posture or threat
- * reading for three ticks means breaking off up to a second late -- so the cadence is gone and every
- * question is asked every tick. questions-per-inference is now 3 or 4 depending only on whether the
- * scorpion is still buried, not on a counter. */
+ * The fourth question costs ~2 ms. There is nothing to ration. */
 const CADENCE = 1;         // every question, every decision; see above
 const BREAK_OFF = 0.75;    // how sure `posture` must be before it vetoes shooting; see the loop below
 /* Breaking off has to be bounded, not just confident.
@@ -100,6 +101,7 @@ export function Agent(M) {
     premise: '', options: [], chosen: null, history: [], game: {},
     posture: null, postureP: 0, threat: null, wake: null,
     breakRun: 0, pressRun: BREAK_COOLDOWN,   // bounded break-off; starts off cooldown
+    abstained: false, pAbstain: 0, calibration: null, threatAbstained: 0,
 
     // Latency bookkeeping. rtt is measured in the browser around the fetch, so it is what the agent
     // actually waits for; serverMs is what the adapter spent talking to llama.cpp. The gap between them
@@ -111,7 +113,7 @@ export function Agent(M) {
     template: `
 <div>
 <header>
-  <h1>Bespoke Nimble &mdash; <span x-text="modelName || 'local model'"></span> plays MARS RAID</h1>
+  <h1>openJev-verdict-2.0 &mdash; <span x-text="modelName || 'local model'"></span> plays MARS RAID</h1>
   <span class="sub" x-text="status()"></span>
   <span class="grow"></span>
   <button @click="toggle()" :class="running ? 'on' : ''" :disabled="!booted"
@@ -177,19 +179,19 @@ export function Agent(M) {
       <div class="row">
         <span class="val" x-text="threat == null ? '—' : threat.toFixed(2)"></span>
         <span class="bar"><i :style="'width:' + (threat == null ? 0 : threat/3*100).toFixed(1) + '%;background:var(--red)'"></i></span>
-        <span class="txt"><span x-text="threatLabel()"></span><em>score &middot; 0&ndash;3 danger rubric</em></span>
+        <span class="txt"><span x-text="threatLabel()"></span><em>score &middot; 0&ndash;3 danger rubric<span x-show="threatAbstained" x-text="' &middot; ' + threatAbstained + ' abstained'"></span></em></span>
       </div>
       <template x-if="wake">
         <div class="row">
           <span class="val" x-text="wake.p.toFixed(2)"></span>
           <span class="bar"><i :style="'width:' + (wake.p*100).toFixed(1) + '%;background:var(--violet)'"></i></span>
-          <span class="txt"><span x-text="'wake the scorpion: ' + wake.choice"></span><em>choice &middot; only asked while it is dormant</em></span>
+          <span class="txt"><span x-text="'wake the scorpion: ' + (wake.abstained ? 'insufficient evidence' : wake.choice)"></span><em>noul &middot; a proposition, judged while it is dormant</em></span>
         </div>
       </template>
     </div>
 
     <div class="card">
-      <div class="k" x-text="'P(target) &mdash; ' + options.length + ' candidates on the ballot'"></div>
+      <div class="k" x-text="'P(target) &mdash; ' + options.length + ' candidates, abstain ' + pAbstain.toFixed(2) + (abstained ? ' (ABSTAINED)' : '') + ' &middot; ' + (calibration || '')"></div>
       <template x-if="!options.length"><div class="muted">no target right now</div></template>
       <template x-for="o in options" :key="o.uid">
         <div class="row" :class="o.uid === chosen ? 'win' : ''">
@@ -301,7 +303,7 @@ export function Agent(M) {
           this.modelInfo = `${this.modelName} via ${h.model.backend}`;
         } else {
           this.modelInfo = 'model offline';
-          this.error = 'nimble server is not up. Run:  bun run model';
+          this.error = 'verdict server is not up. Run:  bun run model';
         }
       } catch { this.error = 'Cannot reach the web server API.'; }
       M.redraw();
@@ -379,39 +381,68 @@ export function Agent(M) {
       for (const b of near('building', 3))
         add(b, 'building', b.uid,
             `Destroy the colony building ${Math.round(b.dist)} metres away. Flattening the colony is the mission and ${s.buildings} still stand${s.buildings === 1 ? 's' : ''}.`);
-      /* "Hold fire" is only on the ballot when there is nothing real to shoot at.
+      /* No `other:hold` candidate. This branch does not have one.
        *
-       * It used to be offered unconditionally, as a legitimate answer rather than filler. On the 27B that
-       * was harmless -- it almost never won. On Qwen3.5-9B it won at 0.98 essentially every tick, and the
-       * agent flew a whole game with `shots: 0` and eleven buildings standing. Same trap as the saucer
-       * sentence, one level up: "attack nothing right now" is a safe, agreeable, always-defensible
-       * statement, and a choice question rewards the option that reads best, not the one that does best.
-       * Smaller models are far more susceptible to it. So it only appears when it is the honest answer --
-       * which also satisfies the 2-candidate minimum when the sky is empty. */
-      if (candidates.length < 2)
-        add({ hold: true }, 'other', 'other:hold', 'There is nothing in range worth attacking, so hold fire.');
-
-      const state = {
-        mission: 'Raid a Mars colony from a gunship. Destroy the colony, then kill the giant scorpion.',
-        hull_percent: s.hull,
-        hull_lost_last_10s: s.recentDamage,
-        altitude_metres: s.altitude,
-        colony_buildings_standing: s.buildings,
-        alien_saucers_airborne: s.saucers,
-        // A snapshot ("a saucer is 49 m away") is always true and therefore always urgent. A trend
-        // ("no damage in ten seconds") is what should actually decide whether to break off, so the
-        // trend is what goes in the state.
-        evasion_working: s.recentDamage < 12,
-        scorpion: s.bossState === 'dormant'
-          ? { status: 'buried and dormant', note: 'it can be woken, and it is the last enemy worth attacking' }
-          : { status: s.bossState, phase: s.bossPhase || null,
-              vulnerable_parts: s.boss.map(b => ({ part: b.part, percent: b.pct })),
-              note: 'every part not listed here is armoured and cannot be hurt' },
-        notes: [
-          'Saucers have poor aim against a ship that keeps moving, and more of them keep spawning, so clearing them all is not possible.',
-          'The ship is destroyed if the hull reaches zero, and the mission fails with it.',
-        ],
-      };
+       * Every earlier branch had to put "hold fire and attack nothing" on the ballot as a written
+       * option, and simplejev-mars documented what that costs: on Qwen3.5-9B it won at 0.98 every tick
+       * and the agent flew a whole game with `shots: 0`, because a safe, agreeable, always-defensible
+       * sentence is exactly what a choice question rewards. The option was competing on prose.
+       *
+       * Verdict appends a reserved `__insufficient_evidence__` candidate to every query itself, and
+       * the id cannot be supplied by us -- constructing an Option with it raises. So abstention here
+       * is a property of the query type rather than a sentence we wrote, and the server reports it as
+       * `abstained` / `p_abstain` beside the substantive distribution. When the model abstains on
+       * `target`, the agent releases and holds fire. That is the same behaviour, decided by the model
+       * rather than argued for by our copywriting.
+       *
+       * A choice still needs 2 real candidates, so with an empty sky and no colony there is simply no
+       * target question to ask -- same as before, minus the filler option. */
+      /* The state goes over as PROSE, not as canonical JSON.
+       *
+       * Every other branch in this repo sends `state` as a JSON object, because simple-jev v1 renders
+       * it as canonical JSON and treats it as data. That is the right call for the models those
+       * branches use. It is the wrong call for this one, and measurably so. Feeding this checkpoint
+       * the JSON state, with only the state changing:
+       *
+       *   posture     break_off p=0.78 at hull 100/0 damage, and p=0.785 at hull 15/26 damage
+       *               -- pinned, the same answer at full health as at death's door
+       *   threat      abstained at every hull level (p_abstain 0.45-0.54), never a reading
+       *   boss phase  head 0.40 and tail 0.53, both described as "armoured and cannot be hurt",
+       *               against 0.07 for the only part that could be damaged
+       *
+       * The same situations written as sentences:
+       *
+       *   posture     press 0.93 at hull 100 -> press 0.81 at hull 15  (ordered, and not stuck)
+       *   boss phase  claw 0.437 -> chosen
+       *
+       * It is a 151M encoder fine-tuned on prose support/security/finance tickets, and a wall of
+       * snake_case keys is not what it reads. So this branch narrates. */
+      const pct = (n) => `${Math.round(n)} percent`;
+      const lines = [
+        'A lone gunship is raiding a Mars colony. The mission is to destroy every colony building, then kill the giant scorpion.',
+        `The gunship's hull is at ${pct(s.hull)}.`,
+        s.recentDamage > 0
+          ? `It has lost ${pct(s.recentDamage)} of its hull in the last ten seconds and is under fire.`
+          : 'It has taken no damage in the last ten seconds and is evading successfully.',
+        `It is flying ${Math.round(s.altitude)} metres up.`,
+        s.buildings > 0
+          ? `${s.buildings} colony building${s.buildings === 1 ? '' : 's'} ${s.buildings === 1 ? 'is' : 'are'} still standing.`
+          : 'The colony is completely destroyed. No buildings are left.',
+        s.saucers > 0
+          ? `${s.saucers} alien saucer${s.saucers === 1 ? '' : 's'} ${s.saucers === 1 ? 'is' : 'are'} in the air, shooting at the gunship. More keep spawning, so they cannot all be cleared.`
+          : 'There are no alien saucers in the air.',
+      ];
+      if (s.bossState === 'dormant') {
+        lines.push('The giant scorpion is still buried and dormant. It can be woken, and it is the last enemy worth attacking.');
+      } else {
+        const parts = s.boss.map(b => `its ${b.part} at ${pct(b.pct)}`).join(', ');
+        lines.push(`The giant scorpion is awake and ${s.bossState}.`);
+        lines.push(parts
+          ? `Right now the only part of it that can be damaged is ${parts}. Every other part is armoured and cannot be hurt at all.`
+          : 'None of its parts can be damaged right now. All of it is armoured.');
+      }
+      lines.push('If the hull reaches zero the gunship is destroyed and the mission fails.');
+      const state = lines.join(' ');
 
       // Field order and candidate order are both preserved end to end: JS object enumeration keeps
       // insertion order for these non-numeric-looking uid keys, and Nimble assigns answer codes A, B,
@@ -440,14 +471,29 @@ export function Agent(M) {
       });
       // Only asked while there is something to answer. This is why questions-per-inference moves: it is
       // 3 for most of the raid and 4 while the scorpion is still buried.
-      if (s.bossState === 'dormant') {
+      /* `wake` is only asked once the colony is actually flattened, and the gate is ours, not the
+       * model's judgement.
+       *
+       * A proposition is the right TYPE for this question -- `noul` is one claim the model judges,
+       * rather than two sentences we have to word symmetrically so neither reads better. But this
+       * checkpoint cannot answer this particular one. Measured, with the colony count the only thing
+       * changing in the state:
+       *
+       *     11 buildings standing -> p_true 0.778      3 -> 0.785      0 -> 0.731
+       *
+       * It is not weakly sensitive, it is very slightly INVERTED: marginally keener to wake the
+       * scorpion with the whole colony intact than with it levelled. Asked every tick from the start,
+       * p_true ~0.78 clears any sane threshold, so the first run woke the scorpion on tick one with
+       * 11 buildings standing -- the failure that loses this game, and the one the 2B made on
+       * simplejev-mars.
+       *
+       * So the ordering constraint is enforced in code and the model is asked only to confirm the
+       * final go. That is a real reduction in what the model is deciding, and the README says so
+       * rather than presenting the result as if it sequenced the mission itself. */
+      if (s.bossState === 'dormant' && s.buildings === 0) {
         questions.wake = {
-          type: 'choice',
-          instructions: 'Wake the buried scorpion now?',
-          criteria: {
-            yes: 'Wake it: the colony is finished and it is the last enemy worth attacking.',
-            no: 'Leave it buried: there are still colony buildings to destroy.',
-          },
+          type: 'noul',
+          instructions: 'the colony is finished and the buried scorpion should be woken now',
         };
       }
       return { state, questions, candidates };
@@ -511,7 +557,7 @@ export function Agent(M) {
       // Slow questions ride along on every CADENCE-th decision; the rest are target-only.
       const full = this.decisions % CADENCE === 0;
       const { state, questions, candidates } = this.situation(full);
-      this.premise = JSON.stringify(state, null, 1);
+      this.premise = state;   // prose now, not JSON -- see situation()
       // v1 requires 1-256 questions. On a target-only tick with an empty sky there is nothing to ask,
       // so do not spend a round trip proving it.
       if (!Object.keys(questions).length) {
@@ -529,11 +575,30 @@ export function Agent(M) {
       const a = r.answers;
       const probs = (a.target && a.target.probabilities) || {};
       this.options = candidates.map(c => ({ ...c, p: probs[c.uid] ?? 0 }));
+      /* `choice` is null when the model abstained -- it picked `__insufficient_evidence__` over every
+         real candidate. That is not an error and not a missing answer; it is the model saying none of
+         these is worth acting on, and the agent holds fire on it below. */
       this.chosen = a.target ? a.target.choice : null;
-      // On a target-only tick the slow answers are simply the previous ones, held rather than re-asked.
+      this.abstained = !!(a.target && a.target.abstained);
+      this.pAbstain = a.target ? a.target.p_abstain : 0;
+      this.calibration = a.target ? a.target.calibration : null;
+
       if (a.posture) { this.posture = a.posture.choice; this.postureP = a.posture.confidence; }
-      if (a.threat) this.threat = a.threat.score;
-      if (full) this.wake = a.wake ? { choice: a.wake.choice, p: a.wake.confidence } : null;
+      /* A `score` comes back null when the model abstained on the rubric, which it does more often
+         than one would like. Overwriting a real reading with null would make the danger gauge blink
+         out exactly when the fight is confusing, so an abstained score HOLDS the previous reading and
+         is counted instead. */
+      if (a.threat) {
+        if (a.threat.score === null || a.threat.score === undefined) this.threatAbstained++;
+        else { this.threat = a.threat.score; }
+      }
+      /* wake is a noul: p_true is P(the proposition holds | there is enough evidence).
+       *
+       * Cleared, not held, when the question was not asked. `wake` is only on the ballot while the
+       * scorpion is dormant, so once it is awake the answer stops arriving -- and a held `true` then
+       * sends the act chain down the wakeBoss() branch on every subsequent tick, which silently skips
+       * aiming. That is a whole game at `shots fired: 0`, and it is a harness bug, not the model. */
+      this.wake = a.wake ? { choice: a.wake.choice, p: a.wake.p_true ?? 0, abstained: a.wake.abstained } : null;
 
       // Latency and question accounting. `questions` is what the adapter actually answered inside this
       // one call, which is the number that makes RTT comparable between ticks.
@@ -543,8 +608,10 @@ export function Agent(M) {
       this.lastRtt = r.__rtt;
       this.lastServerMs = timing ? timing.total_ms : null;
       this.lastQuestions = (timing && timing.questions) || Object.keys(questions).length;
+      // The server reports the real count, which includes the abstention candidate the model adds
+      // to every query. The fallback mirrors that: criteria + 1, and noul is true/false + 1.
       this.lastLabels = timing ? timing.labels : Object.values(questions)
-        .reduce((n, q) => n + (q.type === 'noul' ? 9 : Object.keys(q.criteria).length), 0);
+        .reduce((n, q) => n + 1 + (q.type === 'noul' ? 2 : Object.keys(q.criteria || {}).length), 0);
       this.lastCached = timing ? timing.cached_tokens : null;
       this.lastInputTokens = (r.usage && r.usage.input_tokens) || 0;
       this.rtts.push(r.__rtt);
@@ -574,8 +641,10 @@ export function Agent(M) {
       if (mayBreak) { this.breakRun++; this.pressRun = 0; }
       else { this.pressRun++; if (!wantsBreak) this.breakRun = 0; }
       if (mayBreak) this.mars.evade();
-      else if (this.wake && this.wake.choice === 'yes') this.mars.wakeBoss();
-      else if (!pick || pick.target.hold) this.mars.release();
+      // noul: 'true' means the proposition (wake it now) holds.
+      else if (this.wake && !this.wake.abstained && this.wake.choice === 'true') this.mars.wakeBoss();
+      // No pick means the model abstained on `target`, or there was nothing to ask. Hold fire.
+      else if (!pick) this.mars.release();
       else this.mars.aim(pick.target);
 
       // One sample per candidate per tick, keyed by its identity hash, plus what was actually chosen.

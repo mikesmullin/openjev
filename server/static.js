@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 // Minimal static server for the game + agent page. No framework: the agent loop runs in the browser and
-// talks to the nimble server through this proxy, so there is nothing for a backend to do but serve
-// files and forward. Game logic lives in the page; classifier logic lives in server/nimble_server.py.
+// talks to the verdict server through this proxy, so there is nothing for a backend to do but serve
+// files and forward. Game logic lives in the page; classifier logic lives in server/verdict_server.py.
 const ROOT = new URL('../web/', import.meta.url).pathname;
 const MODEL = process.env.MODEL_URL ?? 'http://127.0.0.1:8750';
 const PORT = Number(process.env.PORT ?? 8734);
 
 Bun.serve({
   port: PORT, hostname: '127.0.0.1',
-  // A decision is several questions against a 9B model; the default 10 s would abort a cold first call.
+  // A decision is ~12 ms here, but the first call pays model load; the default 10 s is still tight.
   idleTimeout: 120,
   async fetch(req) {
     const url = new URL(req.url);

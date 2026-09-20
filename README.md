@@ -1,290 +1,212 @@
-# nimble-mars
+# verdict-mars
 
-[bespokelabs/nimble](https://github.com/bespokelabsai/nimble) — **Bespoke-Nimble-9B**, a LoRA fine-tune of
-Qwen3.5-9B that makes typed decisions in one forward pass — playing **MARS RAID**.
+[openJev-verdict-2.0](https://github.com/Heman10x-NGU/openJev-verdict-2.0) — a ~151M ModernBERT-class
+encoder that scores a whole ballot in one non-autoregressive forward pass — playing **MARS RAID**.
 
-This is the [`openjev-mars`](../../tree/openjev-mars) demo again, fourth model through it, and the closest
-comparison in the repo so far. [`simplejev-mars`](../../tree/simplejev-mars) already measured **stock
-Qwen3.5-9B** on this exact harness. Nimble *is* stock Qwen3.5-9B plus a decision fine-tune. Same game, same
-state, same questions, same ballot — so the only variable is the tuning, and it can be ablated directly
-against its own base, which is what [below](#nimble-against-its-own-base) does.
+Built on [`nimble-mars`](../../tree/nimble-mars), so the game, the harness, the ballot and the wire
+contract are unchanged and only the model moved. It is the **fastest** thing this repo has put in the
+cockpit — a four-question decision is 12 ms, p50 in-game is 18 ms — and it is also the one doing the
+**least** of the deciding, for reasons measured below rather than asserted.
 
-| | `simplejev-mars` | `nimble-mars` *(here)* |
-|---|---|---|
-| model | qwen3.8-27b-nvfp4 (and stock Qwen3.5-9B / 2B) | Bespoke-Nimble-9B = Qwen3.5-9B + LoRA |
-| engine | llama.cpp `llama-server`, over HTTP | Transformers, weights in our own process |
-| asks | one state + N named questions | one context + one flat **schema**, N fields |
-| per decision | 1 prefill per question | **1 prefill per decision**, all fields |
-| decision RTT | p50 427 ms | **p50 132 ms**, p95 146 ms, 3–4 questions |
-| outcome | colony 11→0, scorpion killed | colony 11→0 **at hull 100**, scorpion killed |
+| | `simplejev-mars` | `nimble-mars` | `verdict-mars` *(here)* |
+|---|---|---|---|
+| model | Qwen3.8-27B NVFP4 | Bespoke-Nimble-9B | openJev-verdict-2.0, 151.4M |
+| shape | autoregressive, logits at a prefill | autoregressive, one code token | **non-autoregressive encoder** |
+| per decision | 1 prefill per question | 1 prefill per decision | **1 forward pass, always** |
+| decision RTT | p50 427 ms | p50 132 ms | **p50 18 ms** |
+| types used | choice, score | enum, boolean, ordered enum | **choice, score, noul** |
+| outcome | colony 11→0, scorpion killed | colony 11→0 at hull 100, killed | colony 11→0, scorpion killed |
 
-The model never writes text. Each answer is one letter code (`A`–`Z`, or true/false), read straight off the
-logits and softmaxed over the permitted codes only.
+## Read this before comparing any number to the upstream README
+
+**The benchmarked model cannot be downloaded.** The project contains two models and only one is
+obtainable:
+
+- `verdict2/model.py` — the marker-pointer network with the **dual-channel correctness head**. Every
+  headline figure describes this: 77.10% top-1, 1.44% correctness ECE, 0.7664 AUROC, the
+  selective-classification curves. Its checkpoint `artifacts/verdict2-base/model.pt` is a git-LFS
+  pointer, and the object is not on GitHub's LFS server — the batch API answers
+  `404 Object does not exist`. The advertised HF repo `heman10x/openJev-verdict-2.0` holds a config, a
+  tokenizer and two PNGs. **No weights.**
+- `core/engine_encoder.py` + `heman10x/rlcd-modernbert-151m` — a GLiClass fine-tune of
+  `knowledgator/gliclass-modern-base-v2.0`, 151.4M, checksummed in `artifacts/ARTIFACTS.json`. This one
+  downloads and runs, and **this is what the branch serves.**
+
+So the second channel does not exist here, this branch never uses or claims it, and none of the
+accuracy or calibration headlines can be attributed to what is running.
+
+**The calibration scope is narrower than "calibrated" suggests.** `calibrator.json` is one scalar
+temperature (1.4265) whose recorded scope is `restricted_5_candidate_selection`. Upstream's own engine
+only reports `calibrated_for_scope` when a query has exactly five candidates and `unvalidated_scope`
+otherwise. The ballot here is usually not five, so most answers are outside the fitted scope. The page
+shows that status rather than hiding it.
 
 ## Run it
 
 ```bash
-git clone --recurse-submodules git@github.com:mikesmullin/openjev.git -b nimble-mars
+git clone --recurse-submodules git@github.com:mikesmullin/openjev.git -b verdict-mars
 cd openjev
 
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
-uv pip install --python .venv/bin/python -r vendor/nimble/requirements/training.txt \
-    huggingface_hub flash-linear-attention
-uv pip install --python .venv/bin/python torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python .venv/bin/python transformers gliclass safetensors pydantic
 
-bun run model:prepare   # 18 GB: downloads the pinned base and merges the LoRA on the CPU
-bun run game            # fetch + patch vibe-arcade's mars.html
+bun run model:prepare     # ~580 MB, SHA-256 verified against artifacts/ARTIFACTS.json
+bun run game              # fetch + patch vibe-arcade's mars.html
 
-bun run model           # terminal 1: the only Python process, holds the weights
-bun run dev             # terminal 2: http://127.0.0.1:8734/
+bun run model             # terminal 1  (bun run model:cpu also works)
+bun run dev               # terminal 2: http://127.0.0.1:8734/
 ```
 
-Then press **run agent**. Game on the left; ranked targets, judgement and latency on the right.
-`bun run model:verify` checks the fast scoring modes against upstream's reference before you trust them.
+`bun run model:selftest` runs one decision and a latency sweep. The model loads in 2.3 s and needs
+about 0.6 GB, so it shares a GPU with anything else — or runs on the CPU.
 
-Needs ~18 GB of VRAM for the weights, so nothing else can be resident on a 32 GB card.
+## The first model here whose own vocabulary is v1's
 
-**Pin torchvision.** Installing the requirements pulls `torchvision` 0.26 against torch 2.8.0, and its
-compiled ops then fail to register (`operator torchvision::nms does not exist`). Transformers' lazy
-importer swallows that and re-raises it somewhere else entirely — `ModuleNotFoundError: Could not import
-module 'BloomPreTrainedModel'`, from `peft`, which has nothing to do with it. `torchvision==0.23.0+cu128`
-is the matching build.
-
-## Architecture
+Upstream's primitives are `Choice`, `Score` and `Noul`. That is simple-jev v1 exactly, so nothing is
+invented in translation:
 
 ```
-browser  web/index.html + web/app.js      m.js page; the agent loop lives here, next to the game
-         web/game/mars.html  (iframe)     vibe-arcade's game + one injected bridge line
-         web/game/mars-hook.js            state -> context, targets -> enum choices, autopilot
-   |
-   v  POST /api/decide
-bun      server/static.js                 static files + proxy. No game logic.
-   |
-   v  POST /v1/classifier
-python   server/nimble_server.py          ~500 lines. Holds the weights. Knows nothing about Mars.
-         vendor/nimble/nimble/scoring/    prompt construction + candidate tokens, from the submodule
+v1 choice {criteria: {id: why}}  ->  Choice(options=[Option(id, description=why)])
+v1 score  {criteria: [rubric]}   ->  Score(levels=[Level(id=str(i), description, value=i)])
+v1 noul   {instructions}         ->  Noul(proposition=instructions)
 ```
 
-**The code flies; the model judges.** Aiming, throttle and altitude are code. The model answers *what
-should we be shooting at*, *should we still be here*, *how bad is this* and *should we wake the scorpion*
-— every tick, in one call.
+**`noul` runs for the first time in this repo.** `simplejev-mars` had to abandon it: asked for a bare
+digit `1`-`9`, a Qwen reaches for `0` and every permitted label sits 8+ nats down, so the softmax ran on
+noise. That was a property of making a generative model emit a digit, not of the type. Here noul is a
+two-outcome query scored like any other — though see below for what it actually answers.
 
-### The wire contract is still simple-jev v1
+**Abstention is a real outcome.** Every query gets `__insufficient_evidence__` appended by upstream's
+formatter, and the id is *reserved* — constructing an `Option` with it raises. So this branch is the
+first with no `other:hold` candidate on the ballot. Every earlier branch had to write "hold fire and
+attack nothing right now" as an option, and `simplejev-mars` documented the cost: on Qwen3.5-9B it won
+at 0.98 every tick and flew a whole game at `shots: 0`, because a safe, agreeable sentence is what a
+choice question rewards. Here "none of these" is a property of the query type instead of a sentence
+someone had to write persuasively, and the server reports it as `abstained` / `p_abstain` beside the
+renormalised distribution.
 
-Nothing needs it to be. It is v1 so that `web/app.js`, `web/game/mars-hook.js` and `server/static.js` are
-the `simplejev-mars` files with the model's name changed, and the two branches stay comparable. The
-translation lives in `server/nimble_server.py`:
+## The state has to be prose, and that is not a style preference
 
-| v1 | Nimble |
-|---|---|
-| `choice` with `criteria: {label: why}` | `enum` field, `choices` + `choice_descriptions` |
-| `choice` over exactly yes/no | **`boolean`** field — Nimble's own second type — mapped back |
-| `score` with an ordered rubric | `enum` over ordered levels, read back as `Σ i · pᵢ` |
+Every other branch sends `state` as canonical JSON, because v1 renders it that way and treats it as
+data. Doing that here **measurably breaks the model**. With only the state changing:
 
-The `score` mapping is the one upstream sanctions: *"If a field is an ordered rating scale, your
-application can use the probabilities to calculate an expected level."* So the danger reading stays
-continuous — 2.21 is a real value, not a rounded 2.
-
-v1's third type, `noul`, is deliberately **not** mapped. It encodes a probability as one of the digits
-`1`–`9`, and `simplejev-mars` measured that failing on a Qwen: the model wants to write `0.9`, so it
-reaches for `0`, every permitted label sits 8+ nats down and the softmax runs on noise. Nimble's boolean is
-the type that question actually wants.
-
-`vendor/nimble` is a submodule, never a copy, so prompt text and the candidate-token checks stay upstream's
-and `git submodule update --remote` is the whole upgrade path.
-
-### The prompt budget is 2048, not 8192
-
-Upstream's serving path now permits 8192 tokens, but `schema_config.json` records `max_length: 2048` and
-that is what the adapter was trained at. Going past it is not rejected — it answers, just from outside its
-training distribution, which is the worse failure. The harness budgets against the contract. In practice a
-full four-question decision with nine candidates is ~660–1100 tokens.
-
-The release is a **165 MiB LoRA adapter**, not a checkpoint: it pins `Qwen/Qwen3.5-9B` at an exact revision
-and must be merged against it. `scripts/prepare-model.py` does that and treats `prompt_code_sha256` as
-fatal — the prompt text is part of the trained contract, so a submodule whose `parallel_schema.py` has
-drifted is a different model, not a warning.
-
-## One prefill per decision, not one per field: 315 ms → 115 ms
-
-Upstream's `CudaCandidateScorer` loops the fields and runs each one's full prompt with `use_cache=False`.
-Their docs say so plainly: *"The CUDA scorer scores each field on its own, with the full prompt each
-time."* Only the Mac/MLX `ParallelScorer` prefills the shared context once. That leaves the same
-N-prefills shape that cost `simplejev-mars` its latency — except here the weights are in our own process
-and nothing forces it.
-
-It is worth avoiding because Nimble's prompt is the *opposite shape* to v1's. v1 puts the selected question
-after the context and renders its options twice, so each question carries a large tail of its own. Nimble
-renders the entire schema once and varies only a trailing `Requested field: "name"`. Measured on the real
-payload: **648 of 661 tokens are shared by all four fields**, and each field's suffix is 12–13 tokens.
-
-`prepare_prompts()` already returns that split as `prefix_ids`/`suffix_ids`. Only MLX used it. Two modes now do:
-
-| mode | what it does |
-|---|---|
-| `independent` | upstream's, unchanged — the reference for correctness |
-| `batched` | one padded batch of all N full prompts; one pass, still N prefixes of compute |
-| `prefix` | prefill the prefix once, then one batched step over the suffixes against its cache |
-
-```
-                     1 question   2        3        4 questions
-independent              54.8    107.4    230.1    315.6 ms
-batched                  54.8     91.8    168.0    238.5 ms
-prefix                   76.5     83.5    110.8    115.1 ms
-```
-
-The fourth question costs **4.5 ms**. Below two questions `prefix` is a *loss* — chunking the pass costs
-something and there is nothing to share yet — so the crossover is at two, and the default is `prefix`
-because a decision here is three or four.
-
-### Widening the cache is the hard part, because Qwen3.5 is hybrid
-
-Only 8 of its 32 layers hold an ordinary `keys`/`values` KV cache. The other 24 are linear attention,
-holding a fixed-size recurrent state plus the causal conv's left context:
-
-```
-LinearAttentionLayer   conv_states {0: (1, 8192, 4)}   recurrent_states {0: (1, 32, 128, 128)}
-DynamicLayer           keys (1, 4, P, 256)             values (1, 4, P, 256)
-```
-
-Replicating only the KV half — what a pure-attention model would need — fails loudly, which is the good
-case. Replicating the recurrent state across rows is legitimate: every row continues from the same prefix,
-so they genuinely share both the summary and the conv's left context.
-
-### The leftover logit differences are arithmetic, and here is the control that shows it
-
-BF16 matmul is not associative, so changing the *shape* of the computation moves the last bits, and both
-fast modes change it. Three measurements separate that from a bug:
-
-```
-batched, rows all the same length, zero padding      0.19     so it is not padding
-batched, one row at a time (batch 1, no padding)     0.0000   exact
-chunked prefill, batch 1, NO cache widening at all   0.3618   == prefix mode's own gap, exactly
-```
-
-The last line is the one that matters: splitting the pass reproduces the whole of `prefix` mode's
-disagreement **without widening anything**, so the gap is not a broken mask or a mis-replicated recurrent
-state. So `--verify` checks what actually matters — the argmax and the probabilities the ballot is ranked
-on. Over **24 varied game states and 86 field decisions, both fast modes agree with upstream's on 86/86**,
-max |Δp| 0.056.
-
-`causal_conv1d` is still missing — its prebuilt wheel fails against torch 2.8.0 with the same
-`undefined symbol: _ZN3c104cuda19CUDAErrorLogCaptureC1Ev` the `simplejev-mars` branch hit — so the
-linear-attention conv is on its reference PyTorch path and there is speed still on the table.
-
-## Nimble against its own base
-
-The interesting experiment, because it is controlled: identical prompts, identical schema, same scorer,
-same GPU. Only the LoRA differs.
-
-| case | Bespoke-Nimble-9B | stock Qwen3.5-9B |
+| | JSON state | prose state |
 |---|---|---|
-| hull 15, bleeding → posture | **break_off 0.950** | press 0.625 ✗ |
-| hull 100, untouched → threat | **0.03 / 3** | 0.73 / 3 |
-| hull 15, bleeding → threat | 2.21 / 3 | 2.61 / 3 |
-| colony still standing → wake? | **no 0.990** | **yes 0.628** ✗ |
-| colony flattened → wake? | yes 0.993 | yes 0.785 |
-| boss phase, only the claw vulnerable | claw 0.993, armoured ~0.00 | claw 0.999, armoured 0.000 |
-| hold offered beside real targets | building 0.883 | building 0.856 |
-| hold is the honest answer | hold 0.974 | hold 0.969 |
+| posture, hull 100 / 0 damage | break_off 0.78 | press 0.91 |
+| posture, hull 15 / 26 damage | break_off 0.785 | press 0.70 |
+| threat, any hull | **abstains** (p_abstain 0.45–0.54) | gives a reading |
+| boss phase: armoured head / tail | 0.40 / 0.53 | 0.006 / 0.041 |
+| boss phase: the only vulnerable claw | **0.07** | **0.953** |
 
-The fine-tune earns its place on the **judgement** calls, not on target selection. The base model keeps
-pressing the attack at 15 percent hull while bleeding, and wakes the scorpion with six buildings still
-standing — the exact failure that loses the game. Nimble gets both right and is far better calibrated on
-an idle threat reading (0.03 vs 0.73 at full hull, untouched).
+Under JSON it preferred the two parts whose descriptions say *"armoured and cannot be hurt"* over the
+only one that could be damaged, and abstained overall. Under prose it picks the claw at 0.953. It is a
+151M encoder fine-tuned on prose support, security and finance tickets; a wall of `snake_case` keys is
+not what it reads. So `situation()` narrates the state into sentences, and `server/verdict_server.py`
+passes a string state through verbatim.
 
-Two honest negatives:
+### Irrelevant context flips answers
 
-**The boss-phase showcase is not evidence of the fine-tune.** Both models read the armoured constraint out
-of prose perfectly and both retarget on the vulnerable part. This branch family has claimed that as its
-showcase since `openjev-mars`; on a 9B it is simply not hard.
+The more uncomfortable measurement. Holding the question and the decisive facts identical and only
+appending *true but irrelevant* sentences (altitude, saucer count, mission restatement):
 
-**The `other:hold` trap did not reproduce.** `simplejev-mars` found stock Qwen3.5-9B taking "hold fire" at
-0.98 every tick and flying a whole game with `shots: 0`. Under Nimble's prompt neither model does — both
-pick a real target when one exists (0.883 / 0.856) and both correctly hold when nothing is in range (0.974
-/ 0.969). So that trap was a property of **v1's prompt shape**, not of the 9B weights. Worth recording,
-because the obvious story — "the fine-tune fixed the hold trap" — is wrong.
+```
+posture, press probability        hull 100        hull 46       hull 15
+  2-sentence state                  0.91            0.72          0.70
+  full 8-sentence state             0.35            0.28          0.27
+```
+
+The answer inverts. Upstream reports a 4.76% option-**order** flip rate, and symmetric permutation-KL
+is one of the five headline breakthroughs — but that measures shuffling the options, not padding the
+context. On this task, context length moves the decision further than the decisive fact does.
+
+## What the model can and cannot answer here
+
+Probed directly, with the prose state the agent actually sends:
+
+| question | result | verdict |
+|---|---|---|
+| **target** — which thing to attack | tracks the candidate descriptions, prefers the colony over saucers | **works** |
+| **boss phase** — only the claw is vulnerable | claw 0.953, armoured parts 0.006 / 0.041 | **works, and well** |
+| **posture** — press or break off | `break_off` 0.70–0.71 at *every* hull from 100 to 15 | pinned |
+| **threat** — 0–3 danger rubric | 2.54 at every hull; abstained on 26 of 162 live decisions | flat |
+| **wake** — is the colony finished | p_true 0.778 at 11 buildings, 0.731 at 0 | **slightly inverted** |
+
+The pattern is consistent: it reads the **candidate descriptions** well and barely conditions on the
+**state**. The boss-phase question works because the discriminating fact ("armoured and cannot be hurt")
+is written into the options themselves. Posture, threat and wake all require relating a number in the
+state to a judgement, and it cannot.
+
+### So the harness does more here, and that is the honest headline
+
+Two gates in `web/app.js` exist purely because the model cannot answer the question:
+
+- **`wake` is only asked once the colony is already flattened.** Asked every tick, p_true ~0.78 clears
+  any threshold, and the first run woke the scorpion on tick one with 11 buildings standing — the
+  failure that loses this game and the one the 2B made on `simplejev-mars`. The ordering constraint is
+  now enforced in code and the model only confirms the final go.
+- **The bounded break-off inherited from `nimble-mars` is load-bearing in a way it was not there.**
+  `break_off` sits at 0.62–0.68 in game, below the 0.75 conviction threshold, so the veto mostly never
+  fires. On `nimble-mars` that threshold discriminated; here it mostly just suppresses a constant.
+
+`target` — including the whole boss-phase sequence — is genuinely the model's. The mission structure is
+not.
 
 ## Results
 
-One continuous run, agent driving from the menu, `prefix` mode:
+One continuous run, agent driving from the menu, `wake` gated:
 
 | goal | result |
 |---|---|
-| destroy the colony | **11 → 0 buildings**, hull still **100** as the last one fell |
-| wake the scorpion | flipped to yes on its own once the colony was gone |
-| kill the scorpion | **dead** — worked through all three phases, claws → tail → head |
-| survive | ship lost to saucers *after* the boss died, at hull 20, both objectives complete |
+| destroy the colony | **11 → 0 buildings**, before the scorpion was woken |
+| wake the scorpion | on the model's confirmation, once the colony was gone |
+| kill the scorpion | **dead** — claws → tail → head |
+| survive | ship lost at the very end, hull 2, both objectives complete |
 
-**151 decisions, 522 questions, mean RTT 135 ms, p50 132 ms, p95 146 ms**, ~3 ms of that HTTP/proxy
-overhead. 3 questions per decision for most of the raid and 4 while the scorpion was still buried — the
-RTT trace is almost flat, because the extra questions ride the same prefill.
+**162 decisions, 486 questions, mean RTT 19 ms, p50 18 ms, p95 22 ms**, 7 ms per question, 225 shots
+fired. 12 ms of that is the model and ~7 ms is HTTP and proxy — at this speed the harness overhead is
+a third of the budget, which has not been true on any previous branch.
 
-For comparison: `openjev-mars` got the scorpion to 23 percent before the ship was lost; `simplejev-mars`
-killed it with a 27B at p50 427 ms and hull 93 when the colony fell. This is a 9B at p50 132 ms that
-flattened the colony without taking a hit.
-
-### What decided it: bounding the break-off
-
-`posture: break_off` vetoes shooting entirely, and it was firing on a bare plurality. Measured mid-game at
-hull 82: posture read `break_off` **0.58** while target read *destroy the colony building* **0.75**, and
-the raid sat at 7 of 11 buildings for ninety seconds — evading, never firing. The target question was
-right and the veto was overriding it on a coin flip.
-
-Requiring the veto to be *decisive* (p ≥ 0.75) is what the probabilities are for. An argmax-only interface
-would have to act on 0.58; a distribution lets the agent treat "narrowly break off" as "keep fighting, but
-this is going badly". Not calibration — upstream is explicit that 0.9 does not mean right 90 percent of the
-time — just a threshold tested on the task, which is exactly what they recommend doing with it.
-
-That alone was not enough, and the second half is the more interesting failure. `evade()` flies 600 m from
-the nearest saucer; saucers respawn without limit; once the colony is gone and twelve are airborne,
-breaking off is defensible on nearly every tick. The scorpion's tail then sat at **73 percent for four
-minutes** while `target` kept correctly picking it (0.36–0.63 across ticks) and the ship never closed —
-approach, take fire, flee 600 m, repeat. The aim telemetry named it exactly:
+Latency by question count, measured directly:
 
 ```
-tail radius 4.2 m   dist 297 m   angle 1.53 deg   ->   miss 7.9 m   gate needs < 4.6 m
+1 question 6.8 ms     2 -> 7.8 ms     3 -> 9.9 ms     4 -> 12.0 ms
 ```
 
-`miss` is `sin(angle) * dist`, and the gate is the game's own tolerance, `radius + 0.4`. At that range a
-4.2 m part needs the aim inside 0.81 degrees; the jink holds 1.53. The veto was not wrong
-about the danger; it was simply never allowed to end. So a break-off now lasts at most 6 consecutive
-decisions, after which the agent must press for 8 before it may break off again. With the bound the ship
-closes to ~60 m, and the same fight that stalled at 73 percent went claws → tail → head and killed it.
-
-Same lesson the `laya-mars` branch wrote down independently: *break off as a last resort, and bound it.*
+One padded batch, `forward_call_count: 1`, always. `nimble-mars` had to rebuild upstream's CUDA scorer
+to get four questions into a single pass; here it is what the architecture does. There is no cadence to
+tune and nothing to cache.
 
 ### Honest placement
 
-A heuristic ("shoot whatever is closest and shooting at you") would still likely match this on target
-selection, as on every branch before it. What this model actually buys is the other three questions, and
-the ablation above is the evidence: its own base model, on identical prompts, presses the attack at 15
-percent hull and wakes the boss too early. Those are the two decisions that lose the run.
+This is the fastest and the cheapest model in the repo by a wide margin — 151M parameters, 0.6 GB, 2.3 s
+to load, 18 ms a decision, and it will run on a CPU. It flattened the colony and killed the scorpion.
 
-The scorpion kill is not attributable to the model alone — it took the bounded break-off, which is harness
-logic. And the in-game `KILLS` counter still reads `0 saucers · 0 buildings` with the colony flattened:
-the solo-mode damage patch restores damage, but `awardScore()` is reached on a path solo play does not
-take. Our own `colony left` counter reads the live building list and is the one to trust.
-
-Nimble is not Jev, and upstream says so: 2,676 training examples across ten domains, built in a day, 90.1
-percent reference-label agreement against Jev's 93.2. It cannot emit free text — only codes over supplied
-answers — and it can still pick the wrong one with a confident score.
+But it reached that outcome with more of the mission encoded in the harness than any previous branch,
+because three of its four questions do not respond to the game state. And the model that the upstream
+benchmarks actually describe — the marker-pointer network with the correctness head, which is the
+interesting idea in the project — could not be obtained at all. If those weights are published, the
+branch is worth re-running: the second channel is exactly what the break-off veto on `nimble-mars` had
+to approximate with a hand-tuned threshold.
 
 ## The solo-mode bug in the game
 
 `web/game/mars.html` is fetched and patched by `scripts/fetch-game.sh`, pinned to vibe-arcade commit
-`0cc97efd`. Worth fixing upstream. `fireTwinLaser` does `const owner = myId || 'me'`, but the three damage
-handlers guard with `if (ownerId !== myId) return`. Solo, `myId` is `null` and `owner` is `'me'`, so **every
-hit a solo player lands is silently discarded**. The game already has the correct idiom elsewhere —
+`0cc97efd`. `fireTwinLaser` does `const owner = myId || 'me'`, but the three damage handlers guard with
+`if (ownerId !== myId) return`. Solo, `myId` is `null` and `owner` is `'me'`, so **every hit a solo
+player lands is silently discarded**. The game already has the correct idiom elsewhere —
 `(owner === myId) || (!mpReady && owner === 'me')` — and the script applies it to `mpBuildingHit`,
-`mpRockHit` and `mpBossHit`.
+`mpRockHit` and `mpBossHit`. The in-game `KILLS` counter still reads `0 saucers · 0 buildings` with the
+colony flattened, because `awardScore()` is reached on a path solo play does not take; the page's own
+`colony left` reads the live building list and is the one to trust.
 
 ## Notes
 
-Browsers hold ES modules across reloads even under `no-store`, and a stale module is invisible — it keeps
-the old behaviour while you debug code that never runs. `app.js`, `mars-hook.js` and the game iframe are all
-loaded with a `?v=` cache-bust. `M.mount()` returns the reactive root instance but does **not** call
-`init()` on it; only `x-data` / `x-component` scopes get that automatically.
+A stale answer is worse than no answer. `wake` is only on the ballot while the scorpion is dormant, so
+once it is awake the answer stops arriving — and an earlier version of the response handler *held* the
+last value instead of clearing it, which sent the act chain down the `wakeBoss()` branch on every
+subsequent tick and silently skipped aiming. That was a whole game at `shots fired: 0`, and it was a
+harness bug, not the model. Answers that are not re-asked are now cleared.
 
-Bun's default 10 s `idleTimeout` would abort a cold first decision; `server/static.js` raises it to 120 s.
+Browsers hold ES modules across reloads even under `no-store`. `app.js`, `mars-hook.js` and the game
+iframe are all loaded with a `?v=` cache-bust.

@@ -192,10 +192,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
+            cal = self.engine.calibrator
             return self._send(200, {"ok": True, "backend": "verdict",
-                                    "model": self.engine.model_name_or_path,
+                                    # A stable name, not the local weights path, so the page header
+                                    # reads the same wherever the checkpoint happens to live.
+                                    "model": "openJev-verdict-2.0 (151.4M)",
                                     "device": self.engine.device,
-                                    "calibrated": self.engine.calibrator is not None})
+                                    "calibrated": cal is not None,
+                                    "calibration_scope": getattr(cal, "scope", None)})
         if self.path == "/v1/models":
             return self._send(200, {"data": [{"id": "openJev-verdict-2.0", "object": "model"}]})
         self._send(404, {"error": "not found"})
@@ -213,10 +217,14 @@ class Handler(BaseHTTPRequestHandler):
             if state is None:
                 raise BadRequest("state is required")
             queries = to_queries(questions)
-            # The encoder reads the state as text. Pretty-printed JSON rather than the compact form:
-            # this is a 151M encoder with a 1024-token window and no instruction tuning, and the
-            # newline-per-field layout is closer to what it was trained to read than one long line.
-            context = json.dumps(state, sort_keys=True, ensure_ascii=False, indent=1)
+            # A string state is passed through verbatim. That is the path this branch actually uses,
+            # and it is not a detail -- see the README. Feeding this model the canonical JSON every
+            # other branch sends measurably breaks it: posture returned `break_off` at p~0.78 for
+            # every hull from 100 down to 15, and the boss question preferred the two parts described
+            # as "armoured and cannot be hurt" over the only vulnerable one. The same situations
+            # written as prose restored the ordering. It was trained on prose, so it gets prose.
+            context = state if isinstance(state, str) else json.dumps(
+                state, sort_keys=True, ensure_ascii=False, indent=1)
             with self.lock:
                 batch = self.engine.evaluate(context, queries)
         except BadRequest as e:
