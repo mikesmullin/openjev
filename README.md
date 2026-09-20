@@ -18,6 +18,7 @@ This branch is an index only. The work lives on the topic branches:
 | [`gliner-email`](../../tree/gliner-email) | Inbox triage — GLiNER 2.5 (194M) on the CPU, 18.6 emails/s |
 | [`laya-mars`](../../tree/laya-mars) | MARS RAID — [Laya](https://huggingface.co/convaiinnovations/laya) (421M) on the GPU, 4.7 ms/question |
 | [`laya-email`](../../tree/laya-email) | Inbox triage — Laya (421M) on the GPU, fastest of three and worst at the job |
+| [`nimble-mars`](../../tree/nimble-mars) | MARS RAID — [Bespoke Nimble 9B](https://github.com/bespokelabsai/nimble) on the GPU, one prefill per decision, 132 ms |
 
 **Not a GitHub fork.** The original lives only on Hugging Face. Root commit `63ab36c` vendors his `code/`
 verbatim at `8c9db06`, so `git show 63ab36c` is the pristine upstream and everything after it on each branch
