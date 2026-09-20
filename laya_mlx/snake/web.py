@@ -29,6 +29,9 @@ class SnakeWebApp:
         prompt="compact",
         optimize=False,
         guarded=True,
+        backend="auto",
+        device=None,
+        upstream=None,
     ):
         self.width = width
         self.height = height
@@ -36,12 +39,20 @@ class SnakeWebApp:
         self.initial_length = initial_length
         self.round = 1
         self.lock = threading.Lock()
-        print("Loading local FP16 weights; browser demo uses no network requests...", flush=True)
+        print("Loading weights; browser demo uses no network requests...", flush=True)
         self.policy = LayaPolicy(
             model,
             guarded=guarded,
             prompt=prompt,
             optimize=optimize,
+            backend=backend,
+            device=device,
+            upstream=upstream,
+        )
+        print(
+            f"Backend: {self.policy.backend} ({self.policy.metadata.get('device', 'mlx-gpu')}) "
+            f"model={self.policy.metadata.get('name')}",
+            flush=True,
         )
         # Pay the first-use compilation/kernel cost before the browser starts animating.
         warm = SnakeGame(width, height, seed + 10000, initial_length)
@@ -200,6 +211,22 @@ def main(argv=None):
     parser.add_argument("--prompt", choices=("compact", "detailed"), default="compact")
     parser.add_argument("--optimize", action="store_true")
     parser.add_argument("--unassisted", action="store_true")
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "mlx", "torch"),
+        default="auto",
+        help="Inference runtime: MLX (Apple Silicon) or torch (CUDA/MPS/CPU). Auto picks MLX on macOS, torch elsewhere.",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Torch device (cuda, cuda:0, cpu, mps). Defaults to auto (cuda if available). Ignored on MLX.",
+    )
+    parser.add_argument(
+        "--upstream",
+        default=None,
+        help="Path to the NandhaKishorM/laya checkout for the torch backend (default: .upstream).",
+    )
     args = parser.parse_args(argv)
     try:
         app = SnakeWebApp(
@@ -211,6 +238,9 @@ def main(argv=None):
             prompt=args.prompt,
             optimize=args.optimize,
             guarded=not args.unassisted,
+            backend=args.backend,
+            device=args.device,
+            upstream=args.upstream,
         )
         server = ThreadingHTTPServer((args.host, args.port), SnakeRequestHandler)
         server.app = app

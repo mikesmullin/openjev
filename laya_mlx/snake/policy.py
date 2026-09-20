@@ -15,6 +15,66 @@ from .game import DIRECTIONS
 
 DEFAULT_MODEL = "aac6fef/laya-multilingual-mlx"
 
+# MLX-port checkpoint IDs and their upstream torch equivalents
+# (repo, subfolder) for NandhaKishorM/laya style `laya.load(repo, subfolder=...)`.
+TORCH_MODEL_MAP = {
+    "aac6fef/laya-mlx": ("convaiinnovations/laya", None),
+    "aac6fef/laya-multilingual-mlx": ("convaiinnovations/laya", "multilingual"),
+    "aac6fef/laya-typed-decisions-mlx": ("convaiinnovations/laya", "typed-decisions"),
+}
+
+
+def resolve_backend(backend=None):
+    """Pick 'mlx' or 'torch'. 'auto' prefers MLX on Apple Silicon, torch elsewhere."""
+    value = (backend or "auto").lower()
+    if value == "auto":
+        if platform.system() == "Darwin" and platform.machine() == "arm64":
+            try:
+                import mlx.core  # noqa: F401
+
+                return "mlx"
+            except ImportError:
+                pass
+        return "torch"
+    if value not in ("mlx", "torch"):
+        raise ValueError("backend must be auto, mlx or torch")
+    return value
+
+
+def resolve_torch_model(model):
+    """Map an MLX checkpoint ID (or anything else) to (repo_or_dir, subfolder)."""
+    if model is None:
+        repo, subfolder = TORCH_MODEL_MAP[DEFAULT_MODEL]
+        return repo, subfolder
+    if model in TORCH_MODEL_MAP:
+        return TORCH_MODEL_MAP[model]
+    return model, None
+
+
+def load_torch_agent(model=None, device=None, upstream=None):
+    """Load the upstream PyTorch Laya agent (CUDA/MPS/CPU). Returns (agent, repo, subfolder)."""
+    import sys
+
+    # Prefer the pinned .upstream checkout over any PyPI `laya` that may be installed.
+    root = Path(upstream) if upstream else Path(__file__).resolve().parents[2] / ".upstream"
+    if (root / "laya" / "agent.py").exists():
+        sys.path.insert(0, str(root))
+    try:
+        import laya  # noqa: F401
+    except ImportError:
+        raise FileNotFoundError(
+            "Torch backend needs the upstream checkout:\n"
+            "  gh repo clone NandhaKishorM/laya .upstream\n"
+            "  git -C .upstream checkout 6a5819129eb220570792e417e49723d697efd76f"
+        )
+    path = Path(str(model)).expanduser() if model else None
+    if path is not None and path.is_dir():
+        return laya.load(str(path), device=device), str(path), None
+    repo, subfolder = resolve_torch_model(str(model) if model else None)
+    if str(repo).startswith((".", "/", "~")):
+        raise FileNotFoundError(f"Local checkpoint does not exist: {repo}")
+    return laya.load(repo, device=device, subfolder=subfolder), repo, subfolder
+
 
 def local_checkpoint(value=None):
     """Resolve a directory or an already cached Hub snapshot without network access."""
@@ -53,6 +113,39 @@ def hardware_name():
         if result.returncode == 0:
             return result.stdout.strip().removeprefix("Apple ")
     return platform.machine()
+
+
+def torch_metadata(repo, subfolder, agent, device_arg):
+    try:
+        import torch
+
+        if agent.device.type == "cuda":
+            hardware = torch.cuda.get_device_name(agent.device)
+        else:
+            hardware = hardware_name() + f" (torch-{agent.device.type})"
+        versions = {}
+        for name in ("torch", "transformers", "numpy", "rich", "tokenizers", "huggingface-hub"):
+            try:
+                versions[name] = version(name)
+            except Exception:
+                pass
+    except Exception:
+        hardware, versions = hardware_name(), {}
+    return {
+        "name": f"{repo}" + (f"/{subfolder}" if subfolder else ""),
+        "backend": "torch",
+        "device": str(agent.device),
+        "device_arg": device_arg or "auto",
+        "hardware": hardware,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "versions": versions,
+        "network": "offline" if Path(str(repo)).exists() else "hub-cache",
+        "policy": "Laya probabilities over planner features; optional cycle safety shield",
+        "source_sha256": hashlib.sha256(
+            b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.glob("*.py")))
+        ).hexdigest(),
+    }
 
 
 def checkpoint_metadata(path):
@@ -102,28 +195,50 @@ class Decision:
 
 
 class LayaPolicy:
-    def __init__(self, model=None, *, guarded=True, prompt="compact", optimize=False):
-        from laya_mlx import Agent
-
-        self.path = local_checkpoint(model)
-        self.agent = Agent(
-            self.path,
-            dtype="float16",
-            device="gpu",
-            batch_size=3,
-            compile=optimize,
-            pad_to_multiple=16 if optimize else None,
-            cache_prompts=optimize,
-        )
-        self.guarded = guarded
+    def __init__(
+        self,
+        model=None,
+        *,
+        guarded=True,
+        prompt="compact",
+        optimize=False,
+        backend="auto",
+        device=None,
+        upstream=None,
+    ):
         if prompt not in ("compact", "detailed"):
             raise ValueError("prompt must be compact or detailed")
+        self.backend = resolve_backend(backend)
+        self.guarded = guarded
         self.prompt = prompt
-        self.metadata = checkpoint_metadata(self.path)
-        self.metadata["prompt"] = prompt
-        self.metadata["optimization"] = (
-            "compile + 16-token buckets + prefix cache" if optimize else "eager"
-        )
+        if self.backend == "mlx":
+            from laya_mlx import Agent
+
+            self.path = local_checkpoint(model)
+            self.agent = Agent(
+                self.path,
+                dtype="float16",
+                device="gpu",
+                batch_size=3,
+                compile=optimize,
+                pad_to_multiple=16 if optimize else None,
+                cache_prompts=optimize,
+            )
+            self.metadata = checkpoint_metadata(self.path)
+            self.metadata["backend"] = "mlx"
+            self.metadata["prompt"] = prompt
+            self.metadata["optimization"] = (
+                "compile + 16-token buckets + prefix cache" if optimize else "eager"
+            )
+        else:
+            if optimize:
+                print("Note: --optimize is an MLX-only path; ignoring on torch backend.")
+            agent, repo, subfolder = load_torch_agent(model, device, upstream)
+            self.agent = agent
+            self.path = Path(str(repo)) if Path(str(repo)).exists() else repo
+            self.metadata = torch_metadata(repo, subfolder, agent, device)
+            self.metadata["prompt"] = prompt
+            self.metadata["optimization"] = "eager (torch)"
 
     def decide(self, game):
         started = time.perf_counter()

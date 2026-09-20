@@ -57,6 +57,22 @@ def play(argv=None):
     parser.add_argument("--model", help="Local model directory or an already cached Hub ID")
     parser.add_argument("--prompt", choices=("compact", "detailed"), default="compact")
     parser.add_argument(
+        "--backend",
+        choices=("auto", "mlx", "torch"),
+        default="auto",
+        help="Inference runtime: MLX (Apple Silicon) or torch (CUDA/MPS/CPU).",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Torch device (cuda, cuda:0, cpu, mps). Defaults to auto. Ignored on MLX.",
+    )
+    parser.add_argument(
+        "--upstream",
+        default=None,
+        help="Path to the NandhaKishorM/laya checkout for the torch backend.",
+    )
+    parser.add_argument(
         "--optimize",
         action="store_true",
         help="Enable compilation, 16-token buckets and bounded prefix reuse",
@@ -97,9 +113,15 @@ def play(argv=None):
     console = Console(style=f"on {BG}", highlight=False)
     if not args.headless and not console.is_terminal:
         parser.error("Interactive display needs a TTY. Use --headless for a non-interactive run.")
-    print("Loading local FP16 weights; no network requests...", file=sys.stderr)
+    print("Loading weights; no network requests...", file=sys.stderr)
     policy = LayaPolicy(
-        args.model, guarded=not args.unassisted, prompt=args.prompt, optimize=args.optimize
+        args.model,
+        guarded=not args.unassisted,
+        prompt=args.prompt,
+        optimize=args.optimize,
+        backend=args.backend,
+        device=args.device,
+        upstream=args.upstream,
     )
     warm = SnakeGame(args.width, args.height, args.seed + 10000, args.initial_length)
     for _ in range(6):
