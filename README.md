@@ -6,6 +6,8 @@
 
 **13.4 ms** median end-to-end for a short English typed decision. **7.4 ms** with the multilingual checkpoint. **0 output tokens.** Local MLX inference, with no PyTorch, Transformers runtime, or cloud API.
 
+**On NVIDIA:** RTX 5090 via the torch backend (BF16, eager): **9.5 ms** mean per one-question call, **~11 ms** per three-question Snake decision with the multilingual checkpoint — about **6× faster** than the CPU fallback (~67 ms) on the same box. [`--backend torch --device cuda`](docs/SNAKE_DEMO.md#linux--nvidia-backend) · [RTX 5090 table](#performance-on-rtx-5090)
+
 [中文](https://github.com/mizorewww/laya-mlx/blob/main/README.zh-CN.md) · [Benchmarks](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md) · [Snake demo](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_DEMO.md) · [Hugging Face weights](https://huggingface.co/aac6fef/laya-mlx)
 
 The GIF is a 13-second browser recording of a real local Snake run on Apple Silicon. Every move calls Laya; the visible cycle safety layer can correct unsafe proposals. The latency figures above are the separate **one-question API benchmark**, not the frame time of the three-question Snake loop. [Watch the 13-second MP4](docs/assets/snake-browser.mp4) · [Snake speed and stability](https://github.com/mikesmullin/openjev/blob/laya-snake/docs/SNAKE_BENCHMARKS.md).
@@ -57,6 +59,16 @@ Download once before the offline demo. Use a terminal at least 104 × 35 cells. 
 | Peak MLX allocation, one short question | **943.6 MiB** | **687.6 MiB** |
 
 M3 Max, 40 GPU cores, 128 GiB memory. Timing includes prompt preparation, tokenization, tensors, synchronized inference, calibration and result formatting; model loading is excluded. The 50-question measurement uses `batch_size=64`; the API defaults to 16. Different lengths, question counts and runtime conditions change latency. [Full method and every timing sample](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md).
+
+## Performance on RTX 5090
+
+| Torch backend, eager, multilingual 322M | RTX 5090 (BF16, CUDA) | Same box, CPU fallback (FP32) |
+|---|---:|---:|
+| One-question `predict`, mean | **9.5 ms** | — |
+| Three-question Snake decision | **~11 ms** | **~67 ms** |
+| VRAM, model resident | **~1.3 GiB allocated** | n/a |
+
+Arch Linux, RTX 5090 32 GiB, Python 3.12.12, torch 2.8.0+cu128, transformers 5.17.0, upstream `NandhaKishorM/laya` @ `6a58191`. One-question figure is a synchronized 20-call mean; the Snake figure is the server-measured `inference_ms` per decision (move choice + 2 noul, one batch); CPU figure is a 15-step headless mean. Single run, not a benchmark matrix — conditions and question lengths change latency. Run it with `python -m laya_mlx.snake.web --backend torch --device cuda`; the browser page reports its own backend, precision and device. [Linux setup](docs/SNAKE_DEMO.md#linux--nvidia-backend).
 
 **Port fidelity:** all three checkpoints matched the upstream selected answer on **63/63 validation questions in both FP32 and FP16** — 378/378 comparisons. Each configuration also passed 100 repeated finite, deterministic calls with zero measured active-memory growth. This measures fidelity on those fixtures, not accuracy on every possible question. [Probability errors and validation](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md#numerical-parity-and-stability).
 
