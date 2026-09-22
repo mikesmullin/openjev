@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>laya plays Tetris</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">FluidInference · Core ML · browser UI</p>
+          <h1>laya plays Tetris</h1>
+          <p class="lede">
+            The browser generates every legal landing. The local laya service scores each one with
+            “Is this a clean placement?” and the highest-probability landing wins.
+          </p>
+        </div>
+        <div id="connection" class="status-pill offline">Laya API: checking…</div>
+      </section>
+
+      <section class="game-layout">
+        <div class="board-card">
+          <div class="board-frame">
+            <canvas id="board" width="300" height="600" aria-label="Tetris board"></canvas>
+          </div>
+          <div class="board-meta">
+            <span id="piece-label">Piece —</span>
+            <span id="run-label">Paused</span>
+          </div>
+        </div>
+
+        <aside class="controls-card">
+          <div class="button-row">
+            <button id="play" class="primary">Play</button>
+            <button id="reset">Reset</button>
+            <button id="connect">Check API</button>
+          </div>
+
+          <label>
+            Policy
+            <select id="policy">
+              <option value="laya">laya</option>
+              <option value="heuristic">heuristic</option>
+              <option value="random">random</option>
+            </select>
+          </label>
+
+          <label>
+            Seed
+            <input id="seed" type="number" value="7" min="0" step="1" />
+          </label>
+
+          <label>
+            Delay per scored landing: <strong><span id="evaluation-delay-value">70</span> ms</strong>
+            <input id="evaluation-delay" type="range" min="0" max="300" step="10" value="70" />
+          </label>
+
+          <label>
+            Pause per piece: <strong><span id="piece-delay-value">180</span> ms</strong>
+            <input id="piece-delay" type="range" min="0" max="1000" step="20" value="180" />
+          </label>
+
+          <div class="stats-grid">
+            <div><span>Pieces</span><strong id="pieces">0</strong></div>
+            <div><span>Lines</span><strong id="lines">0</strong></div>
+            <div><span>Decisions</span><strong id="decisions">0</strong></div>
+            <div><span>Median</span><strong id="median">—</strong></div>
+            <div><span>Batch</span><strong id="batch">—</strong></div>
+            <div><span>Bucket</span><strong id="bucket">—</strong></div>
+          </div>
+
+          <div class="legend">
+            <span><i class="swatch board"></i>board</span>
+            <span><i class="swatch evaluating"></i>evaluating</span>
+            <span><i class="swatch chosen"></i>chosen</span>
+          </div>
+        </aside>
+      </section>
+
+      <section class="analysis-grid">
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>Candidate scores</h2>
+            <span id="candidate-count">No piece active</span>
+          </div>
+          <ol id="rankings" class="rankings">
+            <li class="muted">Press Play to score a piece.</li>
+          </ol>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>Game log</h2>
+            <span id="model-status">Model not connected</span>
+          </div>
+          <ol id="log" class="game-log">
+            <li class="muted">No pieces placed yet.</li>
+          </ol>
+        </div>
+      </section>
+
+      <footer>
+        <code>Browser → Bun/Express → Swift/Core ML</code>
+        <span>localhost-only demo</span>
+      </footer>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

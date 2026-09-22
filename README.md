@@ -1,260 +1,165 @@
-# Laya-MLX
+# Laya Core ML Browser
 
-[![Laya MLX browser Snake demo — actual local decisions](docs/assets/snake-browser.gif)](docs/assets/snake-browser.mp4)
+**A local browser Tetris demo driven by Laya typed-decision inference on Apple Silicon.**
 
-**Open-weight typed decisions, running natively on Apple Silicon.**
-
-**13.4 ms** median end-to-end for a short English typed decision. **7.4 ms** with the multilingual checkpoint. **0 output tokens.** Local MLX inference, with no PyTorch, Transformers runtime, or cloud API.
-
-**On NVIDIA:** RTX 5090 via the torch backend (BF16, eager): **9.5 ms** mean per one-question call, **~11 ms** per three-question Snake decision with the multilingual checkpoint — about **6× faster** than the CPU fallback (~67 ms) on the same box. [`--backend torch --device cuda`](docs/SNAKE_DEMO.md#linux--nvidia-backend) · [RTX 5090 table](#performance-on-rtx-5090)
-
-[中文](https://github.com/mizorewww/laya-mlx/blob/main/README.zh-CN.md) · [Benchmarks](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md) · [Snake demo](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_DEMO.md) · [Hugging Face weights](https://huggingface.co/aac6fef/laya-mlx)
-
-The GIF is a 13-second browser recording of a real local Snake run on Apple Silicon. Every move calls Laya; the visible cycle safety layer can correct unsafe proposals. The latency figures above are the separate **one-question API benchmark**, not the frame time of the three-question Snake loop. [Watch the 13-second MP4](docs/assets/snake-browser.mp4) · [Snake speed and stability](https://github.com/mikesmullin/openjev/blob/laya-snake/docs/SNAKE_BENCHMARKS.md).
-
-## Quick start
-
-```bash
-pip install laya-mlx
-```
-
-```python
-import laya_mlx as laya
-
-agent = laya.load("aac6fef/laya-mlx")
-result = agent.predict(
-    "I was billed twice. Please refund the duplicate.",
-    {
-        "department": {
-            "type": "choice",
-            "instructions": "Who should handle this?",
-            "criteria": ["billing", "technical", "sales"],
-        }
-    },
-)
-print(result["answers"]["department"])
-```
-
-Apple Silicon, Python 3.11+, macOS 14+. First load downloads the checkpoint; later inference is fully local. The measured environment is macOS 27.2, Python 3.12.13 and MLX 0.32.2. That MLX release supplies macOS 14, 15 and 26 wheels; the local installer selected the 26 wheel. Older supported macOS versions were not tested on this machine.
-
-Run the terminal demo:
-
-```bash
-pip install 'laya-mlx[demo]'
-hf download aac6fef/laya-multilingual-mlx
-laya-snake
-```
-
-Download once before the offline demo. Use a terminal at least 104 × 35 cells. Space pauses, ↑/↓ changes speed, R resets and Q quits. `laya-snake --max-speed` makes a fresh decision for every move without pacing. [Recording, controls and exact metric meanings](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_DEMO.md).
-
-`laya-snake --optimize --max-speed` enables the tested compilation and prefix-reuse path: **75.40 moves/s across 2,400 moves**, zero deaths and 2 visible safety interventions in the paired M3 Max test. This was about **6.5% faster** than its same-run eager control. [Gameplay, performance and correctness evidence](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_OPTIMIZATION.md).
-
-## Performance on M3 Max
-
-| FP16, end-to-end | Laya 421M | Multilingual 322M |
-|---|---:|---:|
-| One short question, P50 | **13.42 ms** | **7.39 ms** |
-| One short question, P95 | **13.92 ms** | **7.79 ms** |
-| 50-question throughput | **146.8 q/s** | **395.0 q/s** |
-| Peak MLX allocation, one short question | **943.6 MiB** | **687.6 MiB** |
-
-M3 Max, 40 GPU cores, 128 GiB memory. Timing includes prompt preparation, tokenization, tensors, synchronized inference, calibration and result formatting; model loading is excluded. The 50-question measurement uses `batch_size=64`; the API defaults to 16. Different lengths, question counts and runtime conditions change latency. [Full method and every timing sample](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md).
-
-## Performance on RTX 5090
-
-| Torch backend, eager, multilingual 322M | RTX 5090 (BF16, CUDA) | Same box, CPU fallback (FP32) |
-|---|---:|---:|
-| One-question `predict`, mean | **9.5 ms** | — |
-| Three-question Snake decision | **~11 ms** | **~67 ms** |
-| VRAM, model resident | **~1.3 GiB allocated** | n/a |
-
-Arch Linux, RTX 5090 32 GiB, Python 3.12.12, torch 2.8.0+cu128, transformers 5.17.0, upstream `NandhaKishorM/laya` @ `6a58191`. One-question figure is a synchronized 20-call mean; the Snake figure is the server-measured `inference_ms` per decision (move choice + 2 noul, one batch); CPU figure is a 15-step headless mean. Single run, not a benchmark matrix — conditions and question lengths change latency. Run it with `python -m laya_mlx.snake.web --backend torch --device cuda`; the browser page reports its own backend, precision and device. [Linux setup](docs/SNAKE_DEMO.md#linux--nvidia-backend).
-
-**Port fidelity:** all three checkpoints matched the upstream selected answer on **63/63 validation questions in both FP32 and FP16** — 378/378 comparisons. Each configuration also passed 100 repeated finite, deterministic calls with zero measured active-memory growth. This measures fidelity on those fixtures, not accuracy on every possible question. [Probability errors and validation](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md#numerical-parity-and-stability).
-
-## Why typed decisions?
-
-Software often needs a choice, a rubric score or a probability. Laya answers those constrained questions in a bidirectional forward pass, without token-by-token decoding or generated JSON.
+The browser renders the board and generates every legal landing. A local Swift/Core ML
+service asks Laya *“Is this a clean placement?”* for each candidate, and the landing with
+the highest `P(true)` is selected. Bun/Express serves the UI and proxies the inference API;
+no cloud model or generated output tokens are involved.
 
 ```text
-state + typed question → bidirectional encoder → decision heads → probabilities
+HTML/CSS/JavaScript Canvas
+          │
+          ▼
+Bun + Express gateway :3000
+          │
+          ▼
+Swift LayaServer / Core ML :8787
+          │
+          ▼
+Laya multilingual L128 fp16 bucket + tokenizer.json
 ```
 
-- `choice`: probabilities over named options.
-- `score`: probabilities over ordered rubric levels and their expected score.
-- `noul`: P(true) for a proposition.
+## Local MacBook Pro M1 performance
 
-Question rows are batched independently. Their bidirectional encoder representations depend on both state and question; this runtime does not claim to encode the state once and reuse its hidden states across arbitrary questions.
+Measured locally on a **MacBookPro18,1 with Apple M1 Pro, 16 GB RAM**, macOS 26.6.2.
+The service used the 322M-parameter multilingual Laya Core ML model, the L128 bucket,
+and CPU + Neural Engine execution. Model loading was excluded.
 
-The encoder, decision Transformer, scoring head and action head all run in MLX. Tokenization uses Hugging Face's Rust tokenizer. The original pretrained weights, question formatting, calibration and output schema are retained. This is an independent MLX port, not an official Convai Innovations release.
+| Warm local measurement | Result |
+|---|---:|
+| One-state HTTP API, P50 | **9.42 ms** |
+| One-state HTTP API, P95 | **10.06 ms** |
+| 20-state batch, total P50 | **145.80 ms** |
+| 20-state batch, per candidate | **~7.29 ms** |
+| Core ML service time in a 20-state batch | **~7.18 ms/candidate** |
 
-## Supported checkpoints
+The HTTP measurements used 100 single-state requests after 10 warmups and 20 batches of
+20 states. The batch endpoint keeps browser/network overhead out of the per-candidate
+model loop. An earlier 2,083-decision headless Tetris run measured a **7.26 ms median**
+and **7.37 ms P95** for warm Core ML decisions.
 
-| Model | Encoder | Parameters | Context limit | Purpose |
-|---|---|---:|---:|---|
-| `convaiinnovations/laya` | ModernBERT-large | 421M | 512 | English |
-| `convaiinnovations/laya-multilingual` | mmBERT-base | 322M | 1,024 | Multilingual input |
-| `convaiinnovations/laya-typed-decisions` | ModernBERT-large | 421M | 1,024 | Upstream typed-decisions workflows |
+These are measurements from one local development machine, not a cross-device benchmark.
+Different model buckets, prompt lengths, OS activity, and power/thermal conditions will
+change the results.
 
-Context includes instructions, options and state. All three use the original weights, prompt formatting, temperature calibration, and output schema. This repository provides inference and conversion; RLCD training and fine-tuning remain in the upstream project. It is an independent port, not an official Convai Innovations release.
+## Run the browser demo
 
-Pre-converted FP16 checkpoints are published on Hugging Face:
+Requirements:
 
-- [aac6fef/laya-mlx](https://huggingface.co/aac6fef/laya-mlx)
-- [aac6fef/laya-multilingual-mlx](https://huggingface.co/aac6fef/laya-multilingual-mlx)
-- [aac6fef/laya-typed-decisions-mlx](https://huggingface.co/aac6fef/laya-typed-decisions-mlx)
+- Apple Silicon Mac
+- macOS 14+
+- Xcode command-line tools with the license accepted
+- Swift 6+
+- Bun 1.3+
+- The Laya Core ML model assets
 
-Load these directly with `laya.load("aac6fef/laya-mlx")`, or use the original checkpoint IDs above. Each published checkpoint includes its model card, validation results, provenance, license and file checksums. All 36 published files passed strict remote checksum verification; pinned revisions and weight hashes are recorded in [hub-publication.json](https://github.com/mizorewww/laya-mlx/blob/main/benchmarks/results/hub-publication.json).
+The demo uses the existing local model cache when available:
 
-## Development install
+```text
+~/Library/Application Support/FluidUse/Models/laya-coreml/
+```
+
+It must contain `tokenizer.json` and:
+
+```text
+laya_multilingual_fp16_L128_options32.mlmodelc/
+```
+
+The fp16 L128 bucket plus tokenizer is approximately 650 MB. Model files are excluded
+from Git. `LayaServer` can download the L128 assets automatically when `LAYA_MODEL_DIR`
+is not set.
+
+Install the Bun gateway dependency once:
 
 ```bash
-gh repo clone mizorewww/laya-mlx
-cd laya-mlx
-uv sync --extra demo
-uv run --extra demo laya-snake
+bun install --cwd web
 ```
 
-Or install the latest GitHub revision with `pip install 'git+https://github.com/mizorewww/laya-mlx.git'`. Model weights are downloaded separately and are excluded from Git.
+Start the Swift inference service and browser gateway together:
 
-## Python API
+```bash
+./scripts/run-browser.sh
+```
 
-```python
-import laya_mlx as laya
+Then open <http://127.0.0.1:3000>. The UI supports `laya`, `heuristic`, and `random`
+policies. Increase the delay sliders to watch the orange candidate outline move through
+the scored landings before the selected green landing is placed.
 
-agent = laya.load("aac6fef/laya-mlx", dtype="float16")
-result = agent.predict(
-    "I was billed twice. Please refund the duplicate today.",
+To select a different model directory or ports:
+
+```bash
+LAYA_MODEL_DIR="$HOME/Library/Application Support/FluidUse/Models/laya-coreml" \
+LAYA_PORT=8787 PORT=3000 ./scripts/run-browser.sh
+```
+
+## API
+
+The Swift service exposes a small localhost API:
+
+```text
+GET  /healthz
+POST /v1/laya/tetris/score
+```
+
+Scoring is batched so the browser does not make one HTTP request per legal landing:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/laya/tetris/score \
+  -H 'content-type: application/json' \
+  -d '{"states":["The T piece dropped at column 3 leaves one hole under it."]}'
+```
+
+A response contains the calibrated probabilities, token count, bucket and per-call
+latency:
+
+```json
+{
+  "model": "laya-multilingual",
+  "bucket": 128,
+  "results": [
     {
-        "department": {
-            "type": "choice",
-            "instructions": "Which team should handle this request?",
-            "criteria": {
-                "billing": "invoices, payments, refunds",
-                "technical": "bugs and outages",
-                "sales": "new purchases",
-            },
-        },
-        "urgency": {
-            "type": "score",
-            "instructions": "How urgent is this request?",
-            "criteria": ["not urgent", "soon", "critical"],
-        },
-        "refund": {
-            "type": "noul",
-            "instructions": "Does the customer ask for money back?",
-        },
-    },
-)
-print(result["answers"])
+      "pTrue": 0.005990498,
+      "pFalse": 0.9940095,
+      "latencyMs": 7.2,
+      "tokenCount": 46
+    }
+  ]
+}
 ```
 
-`system_one` is an alias for `predict`. States can be text, JSON dictionaries, or conversation lists. `choice` accepts a dictionary or a list of unique labels; `score` returns the expected zero-based rubric level; `noul` returns P(true). Results retain upstream's four-decimal rounding, `action.act_probability`, and token usage fields.
+## Project layout
 
-The default precision is FP16. Use `dtype="float32"` for closer numerical agreement. Probabilities can differ slightly across precisions even when the selected label agrees; see the measured errors in [BENCHMARKS.md](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md). BF16 can be requested but is not part of the published validation matrix.
+- `Sources/LayaEngine/` — exact tokenizer, prompt builder, Core ML bridge and model store
+- `Sources/LayaServer/` — minimal localhost HTTP inference service
+- `web/public/` — browser Tetris and Canvas UI
+- `web/server.js` — Bun/Express static server and API proxy
+- `scripts/run-browser.sh` — builds and starts both services
+- `Tests/LayaEngineTests/` — prompt and typed-answer unit tests
 
-`batch_size=16` caps the number of questions per forward pass; larger requests are processed in chunks. Increase it when memory allows. `device="gpu"` or `device="cpu"` selects a device explicitly; otherwise MLX's default device is used.
+This branch intentionally removes the unrelated form automation, FluidAudio dependency,
+old Swift command-line demos, SwiftUI demo, media, benchmarks and unused desktop assets.
+It retains only the Laya inference path needed by the browser application.
 
-For repeated workloads, opt into `compile=True`, `pad_to_multiple=16` and `cache_prompts=True` when loading an Agent. The prefix cache is bounded to 128 questions and shares CPU state tokenization, while every question still gets its own encoder computation. Compilation has a first-use cost and shape specialization; padding may make some workloads slower. All three options default to disabled. [Measured Snake ablation and usage](https://github.com/mizorewww/laya-mlx/blob/main/docs/SNAKE_OPTIMIZATION.md).
-
-```python
-agent = laya.load("./models/laya", dtype="float32", batch_size=32)
-# Select one checkpoint inside upstream's bundled repository:
-multi = laya.load("convaiinnovations/laya", subfolder="multilingual")
-# Pin a Hub revision for reproducibility:
-agent = laya.load(
-    "convaiinnovations/laya",
-    revision="c5d78730f3493e4fe16d61507ef4b78eef7318cf",
-)
-```
-
-Loading validates every parameter name and shape. Unsupported encoders and non-default RoPE scaling fail explicitly. ModernBERT's global/local attention pattern, inclusive sliding-window boundary, distinct local/global RoPE bases, and first-layer normalization behavior are preserved.
-
-## Language routing and presets
-
-```python
-from laya_mlx import Router, triage_questions
-
-router = Router(dtype="float16", max_loaded=2)
-result = router.predict({"message": "发票被重复扣款，请退款。"}, triage_questions())
-print(result["routing"])  # multilingual
-
-# Choose the specialized checkpoint explicitly:
-result = router.predict(state, questions, task="typed_decisions")
-```
-
-The router, language heuristics, email helpers and application presets are adapted from upstream. `Router(preload=True)` keeps all three checkpoints resident; `attach`, `preload`, `unload`, explicit `lang=`, and explicit `model=` are supported. Typed-decisions workflow detection stays opt-in. The port preserves model limitations: English checkpoints are not substitutes for the multilingual checkpoint, and confidence does not guarantee accuracy.
-
-## Command line
+## Tests and build
 
 ```bash
-uv run laya-mlx predict \
-  --model aac6fef/laya-mlx \
-  --state-file examples/state.json \
-  --questions examples/questions.json
-
-uv run laya-mlx predict \
-  --model aac6fef/laya-multilingual-mlx \
-  --state '发票被重复扣款，请退款。' \
-  --questions examples/questions.json
+swift test
+swift build -c release --product LayaServer
+bun install --cwd web
 ```
 
-## Export an MLX checkpoint
+The release build and the browser gateway have been smoke-tested against the local model
+on the M1 Pro machine described above.
 
-```bash
-uv run laya-mlx convert \
-  --model convaiinnovations/laya \
-  --dtype float16 \
-  --output models/laya-mlx-fp16
+## Model and license
 
-uv run laya-mlx predict \
-  --model models/laya-mlx-fp16 \
-  --state-file examples/state.json \
-  --questions examples/questions.json
-```
+The Core ML model is an independent conversion of
+[`convaiinnovations/laya`](https://huggingface.co/convaiinnovations/laya), published at
+[`FluidInference/laya-coreml`](https://huggingface.co/FluidInference/laya-coreml). It
+provides typed `choice`, `score`, and `noul` decision heads without autoregressive
+text generation. The model and retained runtime code follow their Apache-2.0 licensing;
+see [LICENSE](LICENSE).
 
-The export contains `model.safetensors`, encoder and agent configurations, tokenizer files and `mlx_config.json`. Existing output directories are never overwritten. This is a parameter-name/dtype conversion, not quantization or retraining. The source checkpoints already store FP16 weights; choosing FP32 increases arithmetic precision, not the precision of the source weights.
-
-## Tests and benchmarks
-
-```bash
-uv sync --extra dev --extra reference --extra benchmark --extra demo
-source .venv/bin/activate
-gh repo clone NandhaKishorM/laya .upstream
-git -C .upstream checkout 6a5819129eb220570792e417e49723d697efd76f
-pytest -q
-python -m benchmarks.download
-python -m benchmarks.validate --repeats 100
-python -m benchmarks.run --iterations 50 --warmup 5
-python -m benchmarks.accuracy --per-class 64
-python -m benchmarks.report
-```
-
-Run GPU measurements sequentially. Unit tests use small random models and include direct comparisons with Transformers and the pinned upstream decision head. Real checkpoint validation tests tokenization, logits, calibrated probabilities, repeated outputs and active memory growth. The benchmark runs each backend/checkpoint in a fresh process and stores every timing sample in [benchmarks/results](https://github.com/mizorewww/laya-mlx/blob/main/benchmarks/results). The [full report](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md) explains the timing boundaries and precision differences.
-
-GitHub Actions runs small-model CPU tests on a macOS arm64 runner. Full checkpoint GPU benchmarks are measured locally and are not part of hosted CI.
-
-## Performance research
-
-The performance investigations include both mathematical analysis and independent local experiments:
-
-- [Initial performance research](https://github.com/mizorewww/laya-mlx/blob/main/docs/PERFORMANCE_RESEARCH.md): implementation bottlenecks, MLX kernel dispatch, and a controlled experiment plan.
-- [Mathematical investigation of a further 10× speedup](https://github.com/mizorewww/laya-mlx/blob/main/docs/MATH_10X_RESEARCH.md): arithmetic budgets, conditional bandwidth bounds, real weight spectra, exact reuse, and smaller-model designs.
-- [Engineering investigation](https://github.com/mizorewww/laya-mlx/blob/main/docs/ENGINEERING_10X_RESEARCH.md): measured compilation, quantization, final-head selection, custom Metal kernels, and representative matrix multiplications.
-
-[experiments/](https://github.com/mizorewww/laya-mlx/blob/main/experiments) contains the research scripts and their raw measurements. The published runtime's performance and validation results are in [BENCHMARKS.md](https://github.com/mizorewww/laya-mlx/blob/main/BENCHMARKS.md); each experimental variant has its own timing and correctness results.
-
-The current investigation does not support a further universal 10× speedup with the same checkpoints. Selected cases show approximately 1.03–1.08× paired median speedups; the engineering report gives the uncertainty intervals, quantization fidelity results, and custom Metal kernel measurements.
-
-To prepare model cards and verified exports for publication, install the reference extras and run:
-
-```bash
-python -m scripts.prepare_hub --account YOUR_HF_USERNAME
-hf upload YOUR_HF_USERNAME/laya-mlx models/hub/laya-mlx . --exclude '.cache/*'
-```
-
-The preparation script checks every exported tensor against its original FP16 source. Upload the other two prepared folders in the same way, then use `hf cache verify REPO_ID --local-dir EXPORT_PATH` to check the remote files.
-
-## Attribution and license
-
-Apache-2.0; see [LICENSE](https://github.com/mizorewww/laya-mlx/blob/main/LICENSE) and [NOTICE](https://github.com/mizorewww/laya-mlx/blob/main/NOTICE). Laya and its pretrained weights are by Convai Innovations and upstream contributors. Prompt construction, output formatting, language routing, email utilities and presets are adapted from [NandhaKishorM/laya](https://github.com/NandhaKishorM/laya) at commit `6a5819129eb220570792e417e49723d697efd76f`. The neural architecture is reimplemented in MLX following Laya and Hugging Face ModernBERT.
+Core ML inference requires macOS and Apple Silicon. The Bun/Express layer is a local
+browser gateway, not a portable Linux inference implementation.

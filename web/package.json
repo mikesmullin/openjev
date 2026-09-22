@@ -1,0 +1,12 @@
+{
+  "name": "laya-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun server.js",
+    "dev": "bun --watch server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
