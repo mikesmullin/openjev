@@ -21,6 +21,7 @@ This branch is an index only. The work lives on the topic branches:
 | [`nimble-mars`](../../tree/nimble-mars) | MARS RAID — [Bespoke Nimble 9B](https://github.com/bespokelabsai/nimble) on the GPU, one prefill per decision, 132 ms |
 | [`verdict-mars`](../../tree/verdict-mars) | MARS RAID — [openJev-verdict-2.0](https://github.com/Heman10x-NGU/openJev-verdict-2.0) (151M ModernBERT), non-autoregressive, 18 ms |
 | [`laya-snake`](../../tree/laya-snake) | Snake — [laya-mlx](https://github.com/mizorewww/laya-mlx) (322M multilingual, MLX) playing Snake locally on Apple Silicon, with browser view |
+| [`laya-coreml`](../../tree/laya-coreml) | Tetris — [Laya](https://huggingface.co/convaiinnovations/laya) (322M multilingual, Core ML) playing Tetris in the browser on Apple Silicon, 9.4 ms/decision |
 
 **Not a GitHub fork.** The original lives only on Hugging Face. Root commit `63ab36c` vendors his `code/`
 verbatim at `8c9db06`, so `git show 63ab36c` is the pristine upstream and everything after it on each branch
